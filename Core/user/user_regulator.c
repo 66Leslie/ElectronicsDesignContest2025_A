@@ -6,13 +6,6 @@
 #include "data_process.h"  // 添加数据处理滤波器头文件
 #include "dac.h"          // 添加DAC支持
 #include "tim.h"          // 添加TIM支持，用于PWM控制
-
-// ============================================================================
-// 调试输出控制
-// ============================================================================
-#define DEBUG_PRINTF_ENABLE 1  // 设置为1启用printf调试输出，设置为0禁用
-#define DEBUG_PLL_ONLY 1       // 设置为1只输出锁相相关调试信息，设置为0输出所有调试信息
-#define PID_DEBUG_PRINTF 1     // 设置为1启用PID调试输出，设置为0禁用
 #include "OLED.h"
 #include "key.h"
 #include "adc.h"
@@ -158,7 +151,9 @@ void user_regulator_init(void)
 
     HAL_TIM_Base_Start_IT(&htim1);              // 启用TIM1中断
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);   // 第一对互补PWM
+    HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_1);
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);   // 第二对互补PWM
+    HAL_TIMEx_PWMN_Start(&htim1,TIM_CHANNEL_2);
     HAL_TIM_OC_Start(&htim1, TIM_CHANNEL_3);   // ADC触发通道
 
     OLED_Init();
@@ -551,10 +546,8 @@ void key_proc(void)
                     Three_Phase_PWM_Disable(); // 禁用三相PWM (TIM8)
                 }
 
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-                printf("PWM %s (Single+Three Phase), Start_CMD=%d\r\n",
-                       pwm_enabled ? "ENABLED" : "DISABLED", pwm_enabled ? 0 : 1);
-#endif
+                user_regulator_info("PWM %s (Single+Three Phase), Start_CMD=%d",
+                                   pwm_enabled ? "ENABLED" : "DISABLED", pwm_enabled ? 0 : 1);
                 break;
 
             case KEY4:  // 【修改】切换参考信号选择（外部/内部）
@@ -564,10 +557,8 @@ void key_proc(void)
                 } else {
                     Set_Reference_Signal(REF_SIGNAL_EXTERNAL);
                 }
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-                printf("Reference Signal switched to: %s\r\n",
-                       Get_Reference_Signal_Name(current_reference_signal));
-#endif
+                user_regulator_info("Reference Signal switched to: %s",
+                                   Get_Reference_Signal_Name(current_reference_signal));
                 break;
 
             case KEY5:  // 【修改】模式切换（开环/CV/CC）
@@ -579,9 +570,7 @@ void key_proc(void)
                 } else {
                     Set_Control_Mode(CONTROL_MODE_MANUAL);   // CC -> 开环
                 }
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-                printf("Control Mode switched to: %s\r\n", Get_Control_Mode_Name(current_control_mode));
-#endif
+                user_regulator_info("Control Mode switched to: %s", Get_Control_Mode_Name(current_control_mode));
                 break;
 
             default:
@@ -1054,11 +1043,9 @@ void State_Machine_Update(void)
              {
                 DriveOpen_Analysis = 0;  // 可以打开驱动
                 current_system_state = Running_State;
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-                printf("State: Check -> Running (Ref: %s, PLL: %s)\r\n",
-                       Get_Reference_Signal_Name(current_reference_signal),
-                       SogiQsg_IsLocked(&g_sogi_qsg) ? "LOCKED" : "UNLOCKED");
-#endif
+                user_regulator_info("State: Check -> Running (Ref: %s, PLL: %s)",
+                                   Get_Reference_Signal_Name(current_reference_signal),
+                                   SogiQsg_IsLocked(&g_sogi_qsg) ? "LOCKED" : "UNLOCKED");
             }
             break;
 
@@ -1068,9 +1055,7 @@ void State_Machine_Update(void)
                 pwm_enabled = 0;  // 立即禁用PWM
                 DriveOpen_Analysis = 3;  // 禁止开启
                 current_system_state = Stop_State;
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-                printf("State: Running -> Stop\r\n");
-#endif
+                user_regulator_info("State: Running -> Stop");
             } else {
                 if(DriveOpen_Analysis == 0) {  // 驱动可以打开，等待过零点
                     if(zero_crossing_detected) {  // 检测到过零点
@@ -1084,9 +1069,7 @@ void State_Machine_Update(void)
                         PWM_Delay_Count = 0;
                         pwm_enabled = 1;  // 使能PWM
                         DriveOpen_Analysis = 2;  // 已经打开驱动
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-                        printf("PWM Enabled after 100ms delay\r\n");
-#endif
+                        user_regulator_info("PWM Enabled after 100ms delay");
                     }
                 }
                 // DriveOpen_Analysis == 2 时，PWM已开启，保持运行状态
@@ -1312,12 +1295,10 @@ static void Signal_Quality_Analyze(const float *signal_buffer, uint16_t buffer_s
     // 6. 调试输出（每100次分析输出一次）
     analysis_count++;
     if (analysis_count % 100 == 0) {
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-        printf("Signal Analysis: Freq=%.1fHz, Amp=%.1f, Quality=%s\r\n",
-               analysis_result.frequency,
-               analysis_result.amplitude,
-               (analysis_result.quality == SIGNAL_GOOD) ? "GOOD" : "BAD");
-#endif
+        pll_debug("Signal Analysis: Freq=%.1fHz, Amp=%.1f, Quality=%s",
+                 analysis_result.frequency,
+                 analysis_result.amplitude,
+                 (analysis_result.quality == SIGNAL_GOOD) ? "GOOD" : "BAD");
     }
 }
 
@@ -1374,11 +1355,9 @@ void Dual_Loop_Control_Init(void)
     // 兼容性设置
     pi_control_enabled = 0;
 
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-    printf("Dual Loop Control System Initialized\r\n");
-    printf("Mode: %s, V_ref: %.1fV, I_ref: %.2fA\r\n",
-           Get_Control_Mode_Name(current_control_mode), voltage_reference, current_reference);
-#endif
+    user_regulator_info("Dual Loop Control System Initialized");
+    user_regulator_debug("Mode: %s, V_ref: %.1fV, I_ref: %.2fA",
+                        Get_Control_Mode_Name(current_control_mode), voltage_reference, current_reference);
 }
 
 /**
@@ -1395,9 +1374,7 @@ void Dual_Loop_Control_Reset(void)
     pi_modulation_output = 0.0f;
     current_feedback_instant = 0.0f;
 
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-    printf("Dual Loop Control System Reset\r\n");
-#endif
+    user_regulator_info("Dual Loop Control System Reset");
 }
 
 /**
@@ -1419,10 +1396,8 @@ void Set_Control_Mode(Control_Mode_t mode)
     // 更新兼容性变量
     pi_control_enabled = (mode != CONTROL_MODE_MANUAL);
 
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-    printf("Control Mode: %s -> %s\r\n",
-           Get_Control_Mode_Name(old_mode), Get_Control_Mode_Name(mode));
-#endif
+    user_regulator_info("Control Mode: %s -> %s",
+                       Get_Control_Mode_Name(old_mode), Get_Control_Mode_Name(mode));
 }
 
 /**
@@ -1446,9 +1421,7 @@ void Set_Voltage_Reference(float voltage_ref)
 
     voltage_reference = voltage_ref;
 
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-    printf("Voltage Reference: %.1fV\r\n", voltage_reference);
-#endif
+    user_regulator_debug("Voltage Reference: %.1fV", voltage_reference);
 }
 
 /**
@@ -1463,9 +1436,7 @@ void Set_Current_Reference(float current_ref)
 
     current_reference = current_ref;
 
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-    printf("Current Reference: %.2fA\r\n", current_reference);
-#endif
+    user_regulator_debug("Current Reference: %.2fA", current_reference);
 }
 
 /**
@@ -1497,9 +1468,7 @@ void Set_Reference_Signal(Reference_Signal_t signal_type)
 
     current_reference_signal = signal_type;
 
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-    printf("Reference Signal set to: %s\r\n", Get_Reference_Signal_Name(signal_type));
-#endif
+    user_regulator_info("Reference Signal set to: %s", Get_Reference_Signal_Name(signal_type));
 }
 
 /**
@@ -1525,6 +1494,8 @@ const char* Get_Reference_Signal_Name(Reference_Signal_t signal_type)
  */
 void Three_Phase_PWM_Enable(void)
 {
+    //shut down
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_7, GPIO_PIN_SET);
     // 启动TIM8的PWM输出
     HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_1);  // A相
     HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_2);  // B相
@@ -1536,9 +1507,7 @@ void Three_Phase_PWM_Enable(void)
     // 设置使能标志
     three_phase_pwm_enabled = 1;
 
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-    printf("Three Phase PWM Enabled (TIM8)\r\n");
-#endif
+    three_phase_info("Three Phase PWM Enabled (TIM8)");
 }
 
 /**
@@ -1546,6 +1515,8 @@ void Three_Phase_PWM_Enable(void)
  */
 void Three_Phase_PWM_Disable(void)
 {
+    //shut down
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_7, GPIO_PIN_RESET);
     // 停止TIM8的PWM输出
     HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_1);   // A相
     HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_2);   // B相
@@ -1562,9 +1533,7 @@ void Three_Phase_PWM_Disable(void)
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
 
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-    printf("Three Phase PWM Disabled (TIM8)\r\n");
-#endif
+    three_phase_info("Three Phase PWM Disabled (TIM8)");
 }
 
 /**
@@ -1579,9 +1548,7 @@ void Set_Three_Phase_Modulation_Ratio(float ratio)
 
     three_phase_modulation_ratio = ratio;
 
-#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-    printf("Three Phase Modulation Ratio: %.3f\r\n", three_phase_modulation_ratio);
-#endif
+    three_phase_debug("Three Phase Modulation Ratio: %.3f", three_phase_modulation_ratio);
 }
 
 /**
@@ -1590,24 +1557,24 @@ void Set_Three_Phase_Modulation_Ratio(float ratio)
  */
 void Test_Three_Phase_PWM(void)
 {
-    printf("=== 三相PWM测试开始 ===\r\n");
+    three_phase_info("=== 三相PWM测试开始 ===");
 
     // 1. 设置为手动模式
     Set_Control_Mode(CONTROL_MODE_MANUAL);
-    printf("设置为手动模式\r\n");
+    three_phase_info("设置为手动模式");
 
     // 2. 设置内部参考信号
     Set_Reference_Signal(REF_SIGNAL_INTERNAL);
-    printf("设置为内部参考信号\r\n");
+    three_phase_info("设置为内部参考信号");
 
     // 3. 设置较小的调制比开始测试
     Set_Three_Phase_Modulation_Ratio(0.1f);
     modulation_ratio = 0.1f;
-    printf("设置调制比为10%%\r\n");
+    three_phase_info("设置调制比为10%%");
 
     // 4. 启动三相PWM
     Three_Phase_PWM_Enable();
-    printf("三相PWM已启动\r\n");
+    three_phase_info("三相PWM已启动");
 
     // 5. 逐步增加调制比进行测试
     for(int i = 1; i <= 5; i++) {
@@ -1615,15 +1582,15 @@ void Test_Three_Phase_PWM(void)
         float ratio = 0.1f * i;
         Set_Three_Phase_Modulation_Ratio(ratio);
         modulation_ratio = ratio;
-        printf("调制比设置为: %.1f%%\r\n", ratio * 100.0f);
+        three_phase_info("调制比设置为: %.1f%%", ratio * 100.0f);
     }
 
     // 6. 停止三相PWM
     HAL_Delay(2000);
     Three_Phase_PWM_Disable();
-    printf("三相PWM已停止\r\n");
+    three_phase_info("三相PWM已停止");
 
-    printf("=== 三相PWM测试完成 ===\r\n");
-    printf("请使用示波器观察PC6、PC7、PC8的波形\r\n");
-    printf("应该看到三相120°相位差的PWM波形\r\n");
+    three_phase_info("=== 三相PWM测试完成 ===");
+    three_phase_printf("请使用示波器观察PC6、PC7、PC8的波形");
+    three_phase_printf("应该看到三相120°相位差的PWM波形");
 }
