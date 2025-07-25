@@ -124,7 +124,7 @@
 			"compileCommandFragments" : 
 			[
 				{
-					"fragment" : " -mthumb -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard  -Wall -fdata-sections -ffunction-sections -finput-charset=UTF-8 -fexec-charset=UTF-8 -O0 -g3 -std=gnu11"
+					"fragment" : " -mthumb -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard  -Wall -fdata-sections -ffunction-sections -finput-charset=UTF-8 -fexec-charset=UTF-8 -mthumb -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard  -Wall -fdata-sections -ffunction-sections -finput-charset=UTF-8 -fexec-charset=UTF-8 -O0 -g3 -std=gnu11"
 				}
 			],
 			"defines" : 
@@ -146,23 +146,23 @@
 			[
 				{
 					"backtrace" : 2,
-					"path" : "D:/project/eletric_comp/codes/project3/cmake/stm32cubemx/../../Core/Inc"
+					"path" : "D:/project/eletric_comp/codes/three_phase_spwm/cmake/stm32cubemx/../../Core/Inc"
 				},
 				{
 					"backtrace" : 2,
-					"path" : "D:/project/eletric_comp/codes/project3/cmake/stm32cubemx/../../Drivers/STM32G4xx_HAL_Driver/Inc"
+					"path" : "D:/project/eletric_comp/codes/three_phase_spwm/cmake/stm32cubemx/../../Drivers/STM32G4xx_HAL_Driver/Inc"
 				},
 				{
 					"backtrace" : 2,
-					"path" : "D:/project/eletric_comp/codes/project3/cmake/stm32cubemx/../../Drivers/STM32G4xx_HAL_Driver/Inc/Legacy"
+					"path" : "D:/project/eletric_comp/codes/three_phase_spwm/cmake/stm32cubemx/../../Drivers/STM32G4xx_HAL_Driver/Inc/Legacy"
 				},
 				{
 					"backtrace" : 2,
-					"path" : "D:/project/eletric_comp/codes/project3/cmake/stm32cubemx/../../Drivers/CMSIS/Device/ST/STM32G4xx/Include"
+					"path" : "D:/project/eletric_comp/codes/three_phase_spwm/cmake/stm32cubemx/../../Drivers/CMSIS/Device/ST/STM32G4xx/Include"
 				},
 				{
 					"backtrace" : 2,
-					"path" : "D:/project/eletric_comp/codes/project3/cmake/stm32cubemx/../../Drivers/CMSIS/Include"
+					"path" : "D:/project/eletric_comp/codes/three_phase_spwm/cmake/stm32cubemx/../../Drivers/CMSIS/Include"
 				}
 			],
 			"language" : "C",

@@ -62,7 +62,7 @@ rule C_COMPILER__STM32_Drivers_unscanned_Debug
 # Rule for re-running cmake.
 
 rule RERUN_CMAKE
-  command = D:\software_\stm32cubeclt\STM32CubeCLT_1.18.0\CMake\bin\cmake.exe --regenerate-during-build -SD:\project\eletric_comp\codes\project3 -BD:\project\eletric_comp\codes\project3\build\Debug
+  command = D:\software_\stm32cubeclt\STM32CubeCLT_1.18.0\CMake\bin\cmake.exe --regenerate-during-build -SD:\project\eletric_comp\codes\three_phase_spwm -BD:\project\eletric_comp\codes\three_phase_spwm\build\Debug
   description = Re-running CMake...
   generator = 1
 

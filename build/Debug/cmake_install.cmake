@@ -1,4 +1,4 @@
-# Install script for directory: D:/project/eletric_comp/codes/project3
+# Install script for directory: D:/project/eletric_comp/codes/three_phase_spwm
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -39,7 +39,7 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("D:/project/eletric_comp/codes/project3/build/Debug/cmake/stm32cubemx/cmake_install.cmake")
+  include("D:/project/eletric_comp/codes/three_phase_spwm/build/Debug/cmake/stm32cubemx/cmake_install.cmake")
 endif()
 
 if(CMAKE_INSTALL_COMPONENT)
@@ -50,5 +50,5 @@ endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-file(WRITE "D:/project/eletric_comp/codes/project3/build/Debug/${CMAKE_INSTALL_MANIFEST}"
+file(WRITE "D:/project/eletric_comp/codes/three_phase_spwm/build/Debug/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")

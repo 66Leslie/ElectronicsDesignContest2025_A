@@ -60,14 +60,14 @@
 				{
 					"directoryIndex" : 1,
 					"id" : "STM32_Drivers::@768a070a0fe75716b479",
-					"jsonFile" : "target-STM32_Drivers-Debug-2d90a2143f767014c358.json",
+					"jsonFile" : "target-STM32_Drivers-Debug-a11827f6e6041ac5cdc2.json",
 					"name" : "STM32_Drivers",
 					"projectIndex" : 0
 				},
 				{
 					"directoryIndex" : 0,
 					"id" : "project3::@6890427a1f51a3e7e1df",
-					"jsonFile" : "target-project3-Debug-88889948e82f9a9e3c7f.json",
+					"jsonFile" : "target-project3-Debug-9429a7a143ad9a20e406.json",
 					"name" : "project3",
 					"projectIndex" : 0
 				}
@@ -77,8 +77,8 @@
 	"kind" : "codemodel",
 	"paths" : 
 	{
-		"build" : "D:/project/eletric_comp/codes/project3/build/Debug",
-		"source" : "D:/project/eletric_comp/codes/project3"
+		"build" : "D:/project/eletric_comp/codes/three_phase_spwm/build/Debug",
+		"source" : "D:/project/eletric_comp/codes/three_phase_spwm"
 	},
 	"version" : 
 	{

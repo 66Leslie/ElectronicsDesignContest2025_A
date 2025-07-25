@@ -3,7 +3,7 @@ set(CMAKE_HOST_SYSTEM_NAME "Windows")
 set(CMAKE_HOST_SYSTEM_VERSION "10.0.22631")
 set(CMAKE_HOST_SYSTEM_PROCESSOR "AMD64")
 
-include("D:/project/eletric_comp/codes/project3/cmake/gcc-arm-none-eabi.cmake")
+include("D:/project/eletric_comp/codes/three_phase_spwm/cmake/gcc-arm-none-eabi.cmake")
 
 set(CMAKE_SYSTEM "Generic")
 set(CMAKE_SYSTEM_NAME "Generic")

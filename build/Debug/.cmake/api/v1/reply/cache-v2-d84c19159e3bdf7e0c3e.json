@@ -179,7 +179,7 @@
 				}
 			],
 			"type" : "INTERNAL",
-			"value" : "d:/project/eletric_comp/codes/project3/build/Debug"
+			"value" : "d:/project/eletric_comp/codes/three_phase_spwm/build/Debug"
 		},
 		{
 			"name" : "CMAKE_CACHE_MAJOR_VERSION",
@@ -619,7 +619,7 @@
 				}
 			],
 			"type" : "STATIC",
-			"value" : "D:/project/eletric_comp/codes/project3/build/Debug/CMakeFiles/pkgRedirects"
+			"value" : "D:/project/eletric_comp/codes/three_phase_spwm/build/Debug/CMakeFiles/pkgRedirects"
 		},
 		{
 			"name" : "CMAKE_GENERATOR",
@@ -679,7 +679,7 @@
 				}
 			],
 			"type" : "INTERNAL",
-			"value" : "D:/project/eletric_comp/codes/project3"
+			"value" : "D:/project/eletric_comp/codes/three_phase_spwm"
 		},
 		{
 			"name" : "CMAKE_INSTALL_PREFIX",
@@ -1155,11 +1155,11 @@
 			[
 				{
 					"name" : "HELPSTRING",
-					"value" : "No help, variable specified on the command line."
+					"value" : "The CMake toolchain file"
 				}
 			],
-			"type" : "UNINITIALIZED",
-			"value" : "D:/project/eletric_comp/codes/project3/cmake/gcc-arm-none-eabi.cmake"
+			"type" : "FILEPATH",
+			"value" : "D:/project/eletric_comp/codes/three_phase_spwm/cmake/gcc-arm-none-eabi.cmake"
 		},
 		{
 			"name" : "CMAKE_VERBOSE_MAKEFILE",
@@ -1187,7 +1187,7 @@
 				}
 			],
 			"type" : "STATIC",
-			"value" : "D:/project/eletric_comp/codes/project3/build/Debug"
+			"value" : "D:/project/eletric_comp/codes/three_phase_spwm/build/Debug"
 		},
 		{
 			"name" : "project3_IS_TOP_LEVEL",
@@ -1211,7 +1211,7 @@
 				}
 			],
 			"type" : "STATIC",
-			"value" : "D:/project/eletric_comp/codes/project3"
+			"value" : "D:/project/eletric_comp/codes/three_phase_spwm"
 		}
 	],
 	"kind" : "cache",
