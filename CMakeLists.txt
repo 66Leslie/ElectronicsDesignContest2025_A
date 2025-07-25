@@ -19,7 +19,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Set the project name
-set(CMAKE_PROJECT_NAME project2)
+set(CMAKE_PROJECT_NAME project3)
 
 # Enable compile command to ease indexing with e.g. clangd
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
@@ -51,8 +51,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
         Core/user/data_process.c
         Core/user/sogi_pll.c
         Core/user/sogi_qsg.c  # 新增：基于老师算法的高效锁相模块
-        # Core/user/page_switch_test.c  # 文件不存在，已注释
-        # Core/user/pll_diagnostics.c  # 文件不存在，已注释
         Core/Src/OLED.c
         Core/Src/OLED_Data.c
         # Add user sources here

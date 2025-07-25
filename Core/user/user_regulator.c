@@ -27,6 +27,13 @@ volatile float modulation_ratio = 0.5f;     // 调制比 (0.0 - 1.0)
 volatile uint8_t pwm_enabled = 0;           // PWM使能标志
 
 // ============================================================================
+// 三相逆变器控制变量
+// ============================================================================
+volatile uint8_t three_phase_pwm_enabled = 0;      // 三相PWM使能标志
+volatile float three_phase_modulation_ratio = 0.5f; // 三相调制比 (0.0 - 1.0)
+volatile uint16_t three_phase_sine_index = 0;       // 三相正弦表索引
+
+// ============================================================================
 // 按键控制变量
 // ============================================================================
 volatile uint32_t key_scan_timer = 0;       // 按键扫描定时器
@@ -170,6 +177,11 @@ void user_regulator_init(void)
     modulation_ratio = 0.1f;  // 从较小的值开始，安全起见
     pwm_enabled = 0;          // 初始状态PWM关闭
 
+    // 初始化三相PWM控制变量
+    three_phase_modulation_ratio = 0.1f;  // 三相调制比初始值
+    three_phase_pwm_enabled = 0;          // 初始状态三相PWM关闭
+    three_phase_sine_index = 0;           // 三相正弦表索引初始化
+
     // 初始化AC采样累加器
     ac_voltage_sum_squares = 0.0f;
     ac_current_sum_squares = 0.0f;
@@ -305,6 +317,71 @@ void user_regulator_tim1_callback(void)
     pi_modulation_output = final_modulation_ratio;
     current_feedback_instant = current_real;
 }
+
+// ============================================================================
+// TIM8中断回调函数 - 三相PWM控制 (10kHz频率)
+// ============================================================================
+void user_regulator_tim8_callback(void)
+{
+    // ========== 1. 安全检查：如果三相PWM未使能，输出为0 ==========
+    if (!three_phase_pwm_enabled) {
+        __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, 0);
+        __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
+        __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
+        return;
+    }
+
+    // ========== 2. 获取锁相环输出的cos_theta ==========
+    float cos_theta = SogiQsg_GetCos(&g_sogi_qsg);
+
+    // ========== 3. 控制算法 - 获取最终调制比 ==========
+    float final_modulation_ratio = 0.0f;
+
+    switch (current_control_mode) {
+        case CONTROL_MODE_MANUAL:
+            // 手动模式：直接使用三相调制比
+            final_modulation_ratio = three_phase_modulation_ratio;
+            break;
+
+        case CONTROL_MODE_VOLTAGE:
+            // 独立电压环：使用Process_AC_Data计算的调制比
+            final_modulation_ratio = pi_modulation_output;
+            break;
+
+        case CONTROL_MODE_CURRENT:
+            // 独立电流环：使用Process_AC_Data计算的调制比
+            final_modulation_ratio = pi_modulation_output;
+            break;
+
+        default:
+            final_modulation_ratio = 0.0f;
+            break;
+    }
+
+    // ========== 4. 调制比限制 ==========
+    if (final_modulation_ratio > 1.0f) final_modulation_ratio = 1.0f;
+    if (final_modulation_ratio < -1.0f) final_modulation_ratio = -1.0f;
+
+    // ========== 5. 三相SPWM生成 (相位差120°) ==========
+    // A相：cos_theta (0°)
+    float cos_theta_A = cos_theta;
+    // B相：cos(theta - 120°) = cos_theta * cos(120°) + sin_theta * sin(120°)
+    float sin_theta = SogiQsg_GetSin(&g_sogi_qsg);
+    float cos_theta_B = cos_theta * (-0.5f) + sin_theta * (0.866025f);  // cos(120°)=-0.5, sin(120°)=√3/2
+    // C相：cos(theta + 120°) = cos_theta * cos(120°) - sin_theta * sin(120°)
+    float cos_theta_C = cos_theta * (-0.5f) - sin_theta * (0.866025f);
+
+    // ========== 6. 计算三相PWM占空比 ==========
+    uint32_t duty_cycle_A = (uint32_t)((-cos_theta_A + 1.0f) * 0.5f * PWM_PERIOD_TIM8 * final_modulation_ratio);
+    uint32_t duty_cycle_B = (uint32_t)((-cos_theta_B + 1.0f) * 0.5f * PWM_PERIOD_TIM8 * final_modulation_ratio);
+    uint32_t duty_cycle_C = (uint32_t)((-cos_theta_C + 1.0f) * 0.5f * PWM_PERIOD_TIM8 * final_modulation_ratio);
+
+    // ========== 7. 设置三相PWM占空比 ==========
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty_cycle_A);  // A相
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);  // B相
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
+}
+
 // ============================================================================
 // ADC转换完成回调函数接口
 // ============================================================================
@@ -408,10 +485,11 @@ void key_proc(void)
             case KEY1:  // 【统一功能】参数增加 (+)
                 switch (current_control_mode) {
                     case CONTROL_MODE_MANUAL:
-                        // 手动模式：增加调制比
+                        // 手动模式：增加调制比（同时控制单相和三相）
                         if (modulation_ratio < 0.95f) {
                             modulation_ratio += 0.05f;
                             if (modulation_ratio > 0.95f) modulation_ratio = 0.95f;
+                            three_phase_modulation_ratio = modulation_ratio;  // 三相调制比跟随单相
                         }
                         break;
 
@@ -433,10 +511,11 @@ void key_proc(void)
             case KEY2:  // 【统一功能】参数减少 (-)
                 switch (current_control_mode) {
                     case CONTROL_MODE_MANUAL:
-                        // 手动模式：减少调制比
+                        // 手动模式：减少调制比（同时控制单相和三相）
                         if (modulation_ratio > 0.0f) {
                             modulation_ratio -= 0.05f;
                             if (modulation_ratio < 0.0f) modulation_ratio = 0.0f;
+                            three_phase_modulation_ratio = modulation_ratio;  // 三相调制比跟随单相
                         }
                         break;
 
@@ -455,22 +534,26 @@ void key_proc(void)
                 }
                 break;
 
-            case KEY3:  // 【修改】PWM开启/关闭
+            case KEY3:  // 【修改】PWM开启/关闭（同时控制单相和三相）
                 // 切换PWM使能状态，同时控制状态机启动命令
                 pwm_enabled = !pwm_enabled;
+                three_phase_pwm_enabled = pwm_enabled;  // 三相PWM跟随单相PWM状态
 
                 if (pwm_enabled) {
                     // 启用PWM输出：设置启动命令为0（启动）
                     Set_Start_CMD(0);
-                    PWM_Enable();
+                    PWM_Enable();           // 启用单相PWM (TIM1)
+                    Three_Phase_PWM_Enable(); // 启用三相PWM (TIM8)
                 } else {
                     // 停止PWM输出：设置启动命令为1（停止）
                     Set_Start_CMD(1);
-                    PWM_Disable();
+                    PWM_Disable();          // 禁用单相PWM (TIM1)
+                    Three_Phase_PWM_Disable(); // 禁用三相PWM (TIM8)
                 }
 
 #if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
-                printf("PWM %s, Start_CMD=%d\r\n", pwm_enabled ? "ENABLED" : "DISABLED", pwm_enabled ? 0 : 1);
+                printf("PWM %s (Single+Three Phase), Start_CMD=%d\r\n",
+                       pwm_enabled ? "ENABLED" : "DISABLED", pwm_enabled ? 0 : 1);
 #endif
                 break;
 
@@ -557,7 +640,9 @@ void Update_Disp(void)
 void Display_Manual_Mode_Page(void)
 {
     // 第1行 (0-15): 模式标题和PWM状态
-    OLED_Printf(0, 0, OLED_8X16, "Manual PWM:%s", pwm_enabled ? "ON" : "OFF");
+    OLED_Printf(0, 0, OLED_8X16, "Manual 1P:%s 3P:%s",
+               pwm_enabled ? "ON" : "OFF",
+               three_phase_pwm_enabled ? "ON" : "OFF");
 
     // 第2行 (16-31): 调制比 (大字体显示)
     OLED_Printf(0, 16, OLED_8X16, "Mod: %.1f%%", modulation_ratio * 100.0f);
@@ -1429,4 +1514,116 @@ const char* Get_Reference_Signal_Name(Reference_Signal_t signal_type)
         case REF_SIGNAL_INTERNAL: return "IN";
         default:                  return "UNKNOWN";
     }
+}
+
+// ============================================================================
+// 三相逆变器控制函数实现
+// ============================================================================
+
+/**
+ * @brief 使能三相PWM输出 (TIM8)
+ */
+void Three_Phase_PWM_Enable(void)
+{
+    // 启动TIM8的PWM输出
+    HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_1);  // A相
+    HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_2);  // B相
+    HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_3);  // C相
+
+    // 启动TIM8的中断
+    HAL_TIM_Base_Start_IT(&htim8);
+
+    // 设置使能标志
+    three_phase_pwm_enabled = 1;
+
+#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
+    printf("Three Phase PWM Enabled (TIM8)\r\n");
+#endif
+}
+
+/**
+ * @brief 禁用三相PWM输出 (TIM8)
+ */
+void Three_Phase_PWM_Disable(void)
+{
+    // 停止TIM8的PWM输出
+    HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_1);   // A相
+    HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_2);   // B相
+    HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_3);   // C相
+
+    // 停止TIM8的中断
+    HAL_TIM_Base_Stop_IT(&htim8);
+
+    // 清除使能标志
+    three_phase_pwm_enabled = 0;
+
+    // 确保输出为0
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, 0);
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
+
+#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
+    printf("Three Phase PWM Disabled (TIM8)\r\n");
+#endif
+}
+
+/**
+ * @brief 设置三相调制比
+ * @param ratio 调制比 (0.0 - 1.0)
+ */
+void Set_Three_Phase_Modulation_Ratio(float ratio)
+{
+    // 限制调制比范围
+    if (ratio > 1.0f) ratio = 1.0f;
+    if (ratio < 0.0f) ratio = 0.0f;
+
+    three_phase_modulation_ratio = ratio;
+
+#if DEBUG_PRINTF_ENABLE && !DEBUG_PLL_ONLY
+    printf("Three Phase Modulation Ratio: %.3f\r\n", three_phase_modulation_ratio);
+#endif
+}
+
+/**
+ * @brief 三相PWM测试函数
+ * @note 用于验证三相PWM功能，可在main函数中调用进行测试
+ */
+void Test_Three_Phase_PWM(void)
+{
+    printf("=== 三相PWM测试开始 ===\r\n");
+
+    // 1. 设置为手动模式
+    Set_Control_Mode(CONTROL_MODE_MANUAL);
+    printf("设置为手动模式\r\n");
+
+    // 2. 设置内部参考信号
+    Set_Reference_Signal(REF_SIGNAL_INTERNAL);
+    printf("设置为内部参考信号\r\n");
+
+    // 3. 设置较小的调制比开始测试
+    Set_Three_Phase_Modulation_Ratio(0.1f);
+    modulation_ratio = 0.1f;
+    printf("设置调制比为10%%\r\n");
+
+    // 4. 启动三相PWM
+    Three_Phase_PWM_Enable();
+    printf("三相PWM已启动\r\n");
+
+    // 5. 逐步增加调制比进行测试
+    for(int i = 1; i <= 5; i++) {
+        HAL_Delay(2000);  // 等待2秒
+        float ratio = 0.1f * i;
+        Set_Three_Phase_Modulation_Ratio(ratio);
+        modulation_ratio = ratio;
+        printf("调制比设置为: %.1f%%\r\n", ratio * 100.0f);
+    }
+
+    // 6. 停止三相PWM
+    HAL_Delay(2000);
+    Three_Phase_PWM_Disable();
+    printf("三相PWM已停止\r\n");
+
+    printf("=== 三相PWM测试完成 ===\r\n");
+    printf("请使用示波器观察PC6、PC7、PC8的波形\r\n");
+    printf("应该看到三相120°相位差的PWM波形\r\n");
 }
