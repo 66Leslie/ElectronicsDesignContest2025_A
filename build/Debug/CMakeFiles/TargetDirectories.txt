@@ -1,6 +1,0 @@
-D:/project/eletric_comp/codes/three_phase_spwm/build/Debug/CMakeFiles/project3.dir
-D:/project/eletric_comp/codes/three_phase_spwm/build/Debug/CMakeFiles/edit_cache.dir
-D:/project/eletric_comp/codes/three_phase_spwm/build/Debug/CMakeFiles/rebuild_cache.dir
-D:/project/eletric_comp/codes/three_phase_spwm/build/Debug/cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir
-D:/project/eletric_comp/codes/three_phase_spwm/build/Debug/cmake/stm32cubemx/CMakeFiles/edit_cache.dir
-D:/project/eletric_comp/codes/three_phase_spwm/build/Debug/cmake/stm32cubemx/CMakeFiles/rebuild_cache.dir
