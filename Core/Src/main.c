@@ -178,16 +178,13 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 /**
- * @brief TIM8中断回调函数 - 10kHz PWM控制
+ * @brief TIM中断回调函数 - 已禁用TIM8中断，逻辑已迁移至ADC回调
  * @param htim: 定时器句柄
- * @note 调用user_regulator模块的TIM1回调函数
+ * @note TIM8的PWM控制逻辑已整合到ADC回调中
  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  if(htim->Instance == TIM8)  // 10kHz中断 - 三相PWM控制
-  {
-    user_regulator_tim8_callback();
-  }
+
 }
 
 /**

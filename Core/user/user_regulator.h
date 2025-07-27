@@ -16,13 +16,12 @@
 // 三相PWM控制变量 (合并后只使用TIM8)
 // ============================================================================
 #define SINE_TABLE_SIZE 400   // 10kHz/25Hz = 400个采样点，三相SPWM生成
-#define ADC_AC_BUFFER_SIZE 800  // AC环路DMA缓冲区大小 (400个采样点 × 2个通道)
 #define PWM_PERIOD_TIM8 htim8.Init.Period     // TIM8的ARR (三相PWM)
 #define V_DC 30.0f            // 直流母线电压 30V
 #define V_MeasureGain (0.00080586f)      // 线电压测量增益 (AB线电压, BC线电压) ideal = 1/( 1 / 20e3 * 300 / 3.3 * 4096) = 0.05371//y = 68.011x - 0.1784
 #define I_MeasureGain (0.00080586f)     // 相电流测量增益 (A相电流, B相电流) ideal = 1/( 1 * 2匝  * 0.625V/A *  / 3.3 * 4096) = 0.00064
-#define VacOffset     2048.0f       // 线电压偏置 (AB, BC线电压)
-#define IacOffset     2048.0f       // 相电流偏置 (A, B相电流)
+#define VacOffset     2047.0f       // 线电压偏置 (AB, BC线电压)
+#define IacOffset     2047.0f       // 相电流偏置 (A, B相电流)
 // ============================================================================
 // 控制模式枚举 - 支持三种控制模式
 // ============================================================================
@@ -43,9 +42,9 @@ typedef enum {
 #define PI_V_OUT_MAX  0.9f       // 电压环输出最大值 (调制比)
 #define PI_V_OUT_MIN  0.0f       // 电压环输出最小值 (调制比)
 
-// --- 独立电流环 (50Hz更新) - 直接输出调制比 ---
-#define PI_KP_CURRENT 0.1f       // 电流环比例增益 (调制比输出)
-#define PI_KI_CURRENT 0.02f      // 电流环积分增益 (调制比输出)
+// --- 独立电流环 (20kHz更新) - 瞬时值控制，直接输出调制比 ---
+#define PI_KP_CURRENT 0.05f      // 电流环比例增益 (调制比输出，20kHz快环需要较小增益)
+#define PI_KI_CURRENT 0.001f     // 电流环积分增益 (调制比输出，20kHz快环需要较小积分增益)
 #define PI_I_OUT_MAX  0.9f       // 电流环输出最大值 (调制比)
 #define PI_I_OUT_MIN  0.0f       // 电流环输出最小值
 
@@ -70,7 +69,7 @@ typedef struct {
 // 数据处理变量和测量增益系数 (参考老师代码)
 // ============================================================================
 #define DC_FILTER_SIZE 16
-#define AC_SAMPLE_SIZE 400     // AC采样点数（每通道，对应50Hz周期）20khz(OC3 4250)
+#define AC_SAMPLE_SIZE 400     // AC采样点数（每通道，对应50Hz周期）20khz(update event)
 
 // 保护阈值定义 (参考老师代码)
 #define IL_Peak_MAX         5.0f        // 电流峰值保护阈值 (A)
@@ -89,9 +88,8 @@ void user_regulator_init(void);
 void user_regulator_main(void);
 
 // ============================================================================
-// 回调函数接口 (合并后只保留TIM8)
+// 回调函数接口 (TIM8回调已移除，逻辑整合至ADC回调)
 // ============================================================================
-void user_regulator_tim8_callback(void);  // TIM8三相PWM回调函数
 void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc);
 
 // ============================================================================
@@ -100,9 +98,9 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc);
 void Generate_Sine_Table(void);
 void key_proc(void);
 void Update_Disp(void);
-void Process_AC_Sample(void);
-void Process_AC_Data(void);
-// void Process_ref_Signal(void);  // 已废弃 - 功能移至ADC回调中
+// void Process_AC_Sample(void);    // 已废弃 - 逻辑已迁移至ADC回调中
+// void Process_AC_Data(void);      // 已废弃 - 逻辑已迁移至ADC回调中
+// void Process_ref_Signal(void);   // 已废弃 - 功能移至ADC回调中
 //void Process_DC_Data(void);
 float Calculate_RMS_Real(const uint16_t* data, uint16_t length, float gain, float offset);
 void Update_DC_Filter(float voltage, float current);

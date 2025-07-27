@@ -27,11 +27,12 @@ volatile float voltage_reference = V_REF_DEFAULT;  // 电压参考值 (RMS)
 volatile float current_reference = I_REF_DEFAULT;  // 电流参考值 (RMS)
 
 // 双PI控制器实例
-PI_Controller_t voltage_pi;                 // 电压外环PI控制器 (慢环, 100Hz)50actual
-PI_Controller_t current_pi;                 // 电流内环PI控制器 (快环, 10kHz)50actual
+PI_Controller_t voltage_pi;                 // 电压外环PI控制器 (慢环, 50Hz)
+PI_Controller_t current_pi;                 // 电流内环PI控制器 (快环, 20kHz瞬时值控制)
 
 // 控制输出变量
 volatile float current_reference_peak = 0.0f;      // 电流峰值指令 (由外环输出)
+volatile float current_reference_instant = 0.0f;   // 瞬时电流参考值 (20kHz)
 volatile float pi_modulation_output = 0.0f;        // 最终调制比输出
 volatile float current_feedback_instant = 0.0f;    // 瞬时电流反馈值
 
@@ -134,12 +135,11 @@ void user_regulator_init(void)
 
     OLED_Init();
     OLED_Clear();
-    OLED_ShowString(0, 0, "Init SOGI-QSG", OLED_8X16);
+    OLED_ShowString(0, 0, "Init", OLED_8X16);
     OLED_Update();
 
     // 初始化基于老师算法的高效锁相模块
     SogiQsg_Init(&g_sogi_qsg);
-
     key_init();
 
     // 初始化三相PWM控制变量 (合并后统一使用)
@@ -175,129 +175,44 @@ void user_regulator_main(void)
     // 1. 处理按键输入
     key_proc();
 
-    // 1.5. 更新状态机
     State_Machine_Update();
 
     // 2. 更新显示
     Update_Disp();
-
-    // 3. 处理AC反馈数据
-    if(ac_data_ready) {
-        ac_data_ready = 0;
-        Process_AC_Sample();  // 处理单次AC采样并累加
-    }
-
 }
+
 // ============================================================================
-// TIM8中断回调函数 - 三相PWM控制 (10kHz频率)
-// ============================================================================
-void user_regulator_tim8_callback(void)
-{
-    // ========== 1. 相位计算统一在ADC3回调中进行（20kHz） ==========
-
-    // ========== 2. 安全检查：如果PWM未使能，输出为0 ==========
-    if (!pwm_enabled) {
-        __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, 0);
-        __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
-        __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
-        return;
-    }
-
-    // ========== 3. 获取ADC3回调中更新的相位信息（统一20kHz时序） ==========
-    float cos_theta = g_sogi_qsg.cos_theta;
-
-    // ========== 4. 控制算法 - 获取最终调制比 ==========
-    float final_modulation_ratio = 0.0f;
-
-    switch (current_control_mode) {
-        case CONTROL_MODE_MANUAL:
-            // 手动模式：直接使用调制比
-            final_modulation_ratio = modulation_ratio;
-            break;
-
-        case CONTROL_MODE_VOLTAGE:
-            // 独立电压环：使用Process_AC_Data计算的调制比
-            final_modulation_ratio = pi_modulation_output;
-            break;
-
-        case CONTROL_MODE_CURRENT:
-            // 独立电流环：使用Process_AC_Data计算的调制比
-            final_modulation_ratio = pi_modulation_output;
-            break;
-
-        default:
-            final_modulation_ratio = 0.0f;
-            break;
-    }
-
-    // ========== 5. 调制比限制 (与单相PWM保持一致) ==========
-    if (final_modulation_ratio > 1.0f) final_modulation_ratio = 1.0f;
-    if (final_modulation_ratio < -1.0f) final_modulation_ratio = -1.0f;
-
-    // ========== 6. 三相SPWM生成 (相位差120°) ==========
-    // A相：cos_theta (0°)
-    float cos_theta_A = cos_theta;
-    // B相：cos(theta - 120°) = cos_theta * cos(120°) + sin_theta * sin(120°)
-    float sin_theta = g_sogi_qsg.sin_theta;
-    float cos_theta_B = cos_theta * (-0.5f) + sin_theta * (0.866025f);  // cos(120°)=-0.5, sin(120°)=√3/2
-    // C相：cos(theta + 120°) = cos_theta * cos(120°) - sin_theta * sin(120°)
-    float cos_theta_C = cos_theta * (-0.5f) - sin_theta * (0.866025f);
-
-    // ========== 7. 计算三相PWM占空比 (与单相PWM保持一致，添加边界检查) ==========
-    // 使用与TIM1相同的计算方法，确保波形极性一致
-    float duty_A_float = ((-cos_theta_A + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_modulation_ratio;
-    float duty_B_float = ((-cos_theta_B + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_modulation_ratio;
-    float duty_C_float = ((-cos_theta_C + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_modulation_ratio;
-
-    // 边界检查，防止占空比超出范围导致畸变
-    if (duty_A_float < 0) duty_A_float = 0;
-    if (duty_A_float > PWM_PERIOD_TIM8) duty_A_float = PWM_PERIOD_TIM8;
-    if (duty_B_float < 0) duty_B_float = 0;
-    if (duty_B_float > PWM_PERIOD_TIM8) duty_B_float = PWM_PERIOD_TIM8;
-    if (duty_C_float < 0) duty_C_float = 0;
-    if (duty_C_float > PWM_PERIOD_TIM8) duty_C_float = PWM_PERIOD_TIM8;
-
-    uint32_t duty_cycle_A = (uint32_t)duty_A_float;
-    uint32_t duty_cycle_B = (uint32_t)duty_B_float;
-    uint32_t duty_cycle_C = (uint32_t)duty_C_float;
-
-    // ========== 8. 设置三相PWM占空比 ==========
-    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty_cycle_A);  // A相
-    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);  // B相
-    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
-}
-// ============================================================================
-// ADC转换完成回调函数接口
+// ADC转换完成回调函数接口 - 整合所有控制逻辑
 // ============================================================================
 void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
 {
-    // === 高速AC环路的处理逻辑 ===
+    // 定义静态变量来跟踪所有ADC的完成状态和50Hz慢速环的计数
+    static uint8_t adc_completion_mask = 0;
+    static uint16_t slow_loop_counter = 0;
+
+    // --- Part 1: 数据采集与标志位更新 (每次ADC/DMA完成都会进入) ---
     if(hadc->Instance == ADC1)
     {
-        ac_data_ready = 1;
+        adc_completion_mask |= (1 << 0); // 标记ADC1完成
     }
-    // === DC环路的处理逻辑 ===
     if(hadc->Instance == ADC2)
     {
-        dc_data_ready = 1;
+        adc_completion_mask |= (1 << 1); // 标记ADC2完成
     }
-    // === ADC3：统一处理内部和外部信号（20kHz时序） ===
     if(hadc->Instance == ADC3)
     {
+        // 运行锁相环或内部信号生成 (20kHz)
         uint16_t ref_raw = adc3_reference_buf[0];
-        //参考信号滤波
         static float ref_filtered = 2048.0f;
-        // 使用一阶低通滤波器，滤除高频噪声
         ref_filtered = ref_filtered * 0.95f + (float)ref_raw * 0.05f;
-        //根据信号模式选择处理方式
-        static uint32_t internal_counter = 0;
+
         if (current_reference_signal == REF_SIGNAL_INTERNAL) {
             // 内部信号模式：直接数学计算（20kHz / 50Hz = 400个点）
+            static uint32_t internal_counter = 0;
             internal_counter++;
-            if (internal_counter >= 200) internal_counter = 0;  // 20kHz / 50Hz = 400个点
-
+            if (internal_counter >= AC_SAMPLE_SIZE) internal_counter = 0;  // 20kHz / 50Hz = 400个点
             // 直接用数学方法计算完美的sin/cos
-            float current_angle = 2.0f * M_PI * internal_counter / 200.0f;
+            float current_angle = 2.0f * M_PI * internal_counter / AC_SAMPLE_SIZE;
             g_sogi_qsg.sin_theta = sinf(current_angle);
             g_sogi_qsg.cos_theta = cosf(current_angle);
             g_sogi_qsg.is_locked = 1;  // 内部信号始终锁定
@@ -305,6 +220,172 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
             // 外部信号模式：使用SOGI-QSG处理外部信号
             SogiQsg_Update(&g_sogi_qsg, ref_filtered);
         }
+        adc_completion_mask |= (1 << 2); // 标记ADC3完成
+    }
+
+    // --- Part 2: 门禁检查，确保所有ADC都完成后才执行主逻辑 (10kHz) ---
+    if (adc_completion_mask == 0b00000111)
+    {
+        // --- Part 2.1: 模拟50Hz慢速环 (每400次10kHz中断执行一次) ---
+        // 这是对 Process_AC_Sample 和 Process_AC_Data 逻辑的整合
+
+        // 累加采样值 (10kHz)
+        // 从DMA缓冲区读取当前采样值
+        uint16_t current_raw_A  = adc_ac_buf[0];  // ADC1_IN1 (A相电流)
+        uint16_t voltage_raw_AB = adc_ac_buf[1];  // ADC1_IN2 (AB线电压)
+        uint16_t current_raw_B  = adc_ac_buf[2];  // ADC2_IN3 (B相电流)
+        uint16_t voltage_raw_BC = adc_ac_buf[3];  // ADC2_IN4 (BC线电压)
+
+        // 转换为真实物理量：先减去偏置，再乘以增益
+        float current_A = (current_raw_A - IacOffset) * I_MeasureGain;  // A相电流
+        float voltage_AB = (voltage_raw_AB - VacOffset) * V_MeasureGain;  // AB线电压
+        float current_B = (current_raw_B - IacOffset) * I_MeasureGain;  // B相电流
+        float voltage_BC = (voltage_raw_BC - VacOffset) * V_MeasureGain;  // BC线电压
+        float voltage_AC = voltage_AB - voltage_BC;  // AC线电压
+
+        // 更新瞬时电流反馈值 (20kHz)
+        current_feedback_instant = current_A;  // 使用A相电流作为瞬时反馈
+
+        // 累加平方值
+        current_A_sum += current_A * current_A;
+        voltage_AB_sum += voltage_AB * voltage_AB;
+        current_B_sum += current_B * current_B;
+        voltage_BC_sum += voltage_BC * voltage_BC;
+        voltage_AC_sum += voltage_AC * voltage_AC;
+        slow_loop_counter++;
+
+        if (slow_loop_counter >= AC_SAMPLE_SIZE) // AC_SAMPLE_SIZE应为400
+        {
+            slow_loop_counter = 0; // 计数器清零
+
+            // --- 此处是原 Process_AC_Data 的内容 (50Hz执行) ---
+            // 1. 计算RMS值
+            ac_current_rms_A = sqrtf(current_A_sum / (float)AC_SAMPLE_SIZE) * 5.1778f - 0.0111f -0.02f;
+            ac_voltage_rms_AB = sqrtf(voltage_AB_sum / (float)AC_SAMPLE_SIZE) * 68.011f - 0.1784f;//y = 48.48504x-0.56078136
+            ac_current_rms_B = sqrtf(current_B_sum / (float)AC_SAMPLE_SIZE) * 5.1778f - 0.0111f -0.02f;
+            ac_voltage_rms_BC = sqrtf(voltage_BC_sum / (float)AC_SAMPLE_SIZE) * 68.011f - 0.1784f;
+
+            // 2. 清空累加器
+            current_A_sum = 0.0f;
+            current_B_sum = 0.0f;
+            voltage_AB_sum = 0.0f;
+            voltage_BC_sum = 0.0f;
+            voltage_AC_sum = 0.0f;
+
+            // 3. 执行电压有效值PI控制器 (50Hz)
+            switch (current_control_mode) {
+                case CONTROL_MODE_MANUAL:
+                    // 手动模式：不执行任何闭环控制
+                    break;
+
+                case CONTROL_MODE_VOLTAGE:
+                    // 独立电压环：直接从电压RMS反馈到调制比 (慢环，50Hz更新)
+                    if (pwm_enabled) {
+                        // 电压环PI控制器直接计算调制比
+                        float voltage_modulation = PI_Controller_Update_Incremental(&voltage_pi, voltage_reference, ac_voltage_rms_AB);
+
+                        // 限制调制比到安全范围
+                        if (voltage_modulation > PI_V_OUT_MAX) voltage_modulation = PI_V_OUT_MAX;
+                        if (voltage_modulation < PI_V_OUT_MIN) voltage_modulation = PI_V_OUT_MIN;
+
+                        // 存储调制比供慢环使用
+                        pi_modulation_output = voltage_modulation;
+                    }
+                    break;
+
+                case CONTROL_MODE_CURRENT:
+                    // 独立电流环：从电流RMS反馈到调制比 (慢环，50Hz更新)
+                    // 注意：这里只是更新电流参考峰值，实际的瞬时控制在20kHz快环中进行
+                    if (pwm_enabled) {
+                        // 将RMS参考值转换为峰值参考值 (RMS * √2)
+                        current_reference_peak = current_reference * 1.414213562f;
+
+                        // 50Hz慢环不再直接计算调制比，而是为20kHz快环提供参考值
+                        // pi_modulation_output 将在20kHz快环中更新
+                    }
+                    break;
+
+                default:
+                    pi_modulation_output = 0.0f;
+                    break;
+            }
+        }
+
+        // --- Part 2.2: 10kHz快速环 - 更新PWM (每次都执行) ---
+        // 这是原 user_regulator_tim8_callback 的内容
+        if (pwm_enabled)
+        {
+            float final_modulation_ratio = 0.0f;
+
+            switch (current_control_mode) {
+                case CONTROL_MODE_MANUAL:
+                    // 手动模式：直接使用调制比
+                    final_modulation_ratio = modulation_ratio;
+                    break;
+
+                case CONTROL_MODE_VOLTAGE:
+                    // 独立电压环：使用50Hz慢环计算的结果
+                    final_modulation_ratio = pi_modulation_output;
+                    break;
+
+                case CONTROL_MODE_CURRENT:
+                    // 独立电流环：使用50Hz慢环计算的结果
+                    final_modulation_ratio = pi_modulation_output;
+                    break;
+
+                default:
+                    final_modulation_ratio = 0.0f;
+                    break;
+            }
+
+            // 调制比限制
+            if (final_modulation_ratio > 1.0f)  final_modulation_ratio = 1.0f;
+            if (final_modulation_ratio < -1.0f) final_modulation_ratio = -1.0f;
+
+            // 获取相位信息
+            float cos_theta = g_sogi_qsg.cos_theta;
+            float sin_theta = g_sogi_qsg.sin_theta;
+
+            // 三相SPWM生成 (相位差120°)
+            // A相：cos_theta (0°)
+            float cos_theta_A = cos_theta;
+            // B相：cos(theta - 120°) = cos_theta * cos(120°) + sin_theta * sin(120°)
+            float cos_theta_B = cos_theta * (-0.5f) + sin_theta * (0.866025f);  // cos(120°)=-0.5, sin(120°)=√3/2
+            // C相：cos(theta + 120°) = cos_theta * cos(120°) - sin_theta * sin(120°)
+            float cos_theta_C = cos_theta * (-0.5f) - sin_theta * (0.866025f);
+
+            // 计算三相PWM占空比
+            float duty_A_float = ((-cos_theta_A + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_modulation_ratio;
+            float duty_B_float = ((-cos_theta_B + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_modulation_ratio;
+            float duty_C_float = ((-cos_theta_C + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_modulation_ratio;
+
+            // 边界检查，防止占空比超出范围导致畸变
+            if (duty_A_float < 0) duty_A_float = 0;
+            if (duty_A_float > PWM_PERIOD_TIM8) duty_A_float = PWM_PERIOD_TIM8;
+            if (duty_B_float < 0) duty_B_float = 0;
+            if (duty_B_float > PWM_PERIOD_TIM8) duty_B_float = PWM_PERIOD_TIM8;
+            if (duty_C_float < 0) duty_C_float = 0;
+            if (duty_C_float > PWM_PERIOD_TIM8) duty_C_float = PWM_PERIOD_TIM8;
+
+            uint32_t duty_cycle_A = (uint32_t)duty_A_float;
+            uint32_t duty_cycle_B = (uint32_t)duty_B_float;
+            uint32_t duty_cycle_C = (uint32_t)duty_C_float;
+
+            // 设置三相PWM占空比
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty_cycle_A);  // A相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);  // B相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
+        }
+        else
+        {
+            // PWM关闭时，清零占空比
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, 0);
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
+        }
+
+        // --- Part 2.3: 重置掩码，为下个周期做准备 ---
+        adc_completion_mask = 0;
     }
 }
 // ============================================================================
@@ -662,119 +743,6 @@ void Display_CC_Mode_Page(void)
     OLED_Println(OLED_6X8, "AB:%.1fV BC:%.1fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
     OLED_Println(OLED_6X8, "K1:+ K2:- K4:Ref K5:Page");
 }
-// ============================================================================
-// AC单次采样处理函数 (累加器方式)
-// ============================================================================
-void Process_AC_Sample(void)
-{
-    // 从DMA缓冲区读取当前采样值
-    uint16_t current_raw_A  = adc_ac_buf[0];  // ADC1_IN1 (A相电流)
-    uint16_t voltage_raw_AB = adc_ac_buf[1];  // ADC1_IN2 (AB线电压)
-    uint16_t current_raw_B  = adc_ac_buf[2];  // ADC2_IN3 (B相电流)
-    uint16_t voltage_raw_BC = adc_ac_buf[3];  // ADC2_IN4 (BC线电压)
-
-    // 转换为真实物理量：先减去偏置，再乘以增益
-    float current_A = (current_raw_A - IacOffset) * I_MeasureGain;  // A相电流
-    float voltage_AB = (voltage_raw_AB - VacOffset) * V_MeasureGain;  // AB线电压
-    float current_B = (current_raw_B - IacOffset) * I_MeasureGain;  // B相电流
-    float voltage_BC = (voltage_raw_BC - VacOffset) * V_MeasureGain;  // BC线电压
-    float voltage_AC = voltage_AB - voltage_BC;  // AC线电压
-
-    // 累加平方值
-    current_A_sum += current_A * current_A + current_A * current_A;
-    voltage_AB_sum += voltage_AB * voltage_AB + voltage_AB * voltage_AB;
-    current_B_sum += current_B * current_B + current_B * current_B;
-    voltage_BC_sum += voltage_BC * voltage_BC + voltage_BC * voltage_BC;
-    voltage_AC_sum += voltage_AC * voltage_AC + voltage_AC * voltage_AC;
-
-    // 增加采样计数
-    ac_sample_count++;
-
-    // 检查是否采样完成 (400个点)
-    if(ac_sample_count >= AC_SAMPLE_SIZE) {
-        Process_AC_Data();
-    }
-}
-// ============================================================================
-// AC环路数据处理函数 (200个点采样完成后调用) - 50Hz频率 (10kHz采样率)
-// ============================================================================
-void Process_AC_Data(void)
-{
-    // 计算原始RMS值 (第一组：相电流和线电压)
-    float raw_current_rms_A  = sqrtf(current_A_sum / (float)AC_SAMPLE_SIZE) * 5.1778f - 0.0111f -0.02f;
-    float raw_voltage_rms_AB = sqrtf(voltage_AB_sum / (float)AC_SAMPLE_SIZE) * 48.48504f - 0.15078136f;//48.48504x-0.56078136	
-    float raw_current_rms_B  = sqrtf(current_B_sum / (float)AC_SAMPLE_SIZE) * 5.1778f - 0.0111f -0.02f;
-    float raw_voltage_rms_BC = sqrtf(voltage_BC_sum / (float)AC_SAMPLE_SIZE) * 68.011f - 0.1784f -0.6f;
-    //根据A B 算出 C
-
-    // 应用高级滤波器
-    ac_current_rms_A = raw_current_rms_A;
-
-    ac_voltage_rms_AB = raw_voltage_rms_AB;
-    float ac_voltage_rms_A = raw_voltage_rms_AB/sqrtf(3.0f);
-    ac_current_rms_B = raw_current_rms_B;
-    ac_voltage_rms_BC = raw_voltage_rms_BC;
-
-    // 清空累加器，准备下一轮采样
-    current_A_sum = 0.0f;
-    current_B_sum = 0.0f;
-    voltage_AB_sum = 0.0f;
-    voltage_BC_sum = 0.0f;
-    ac_sample_count = 0;
-
-    // ========== 【修改】独立电压环和电流环控制 (50Hz更新) ==========
-    //为反馈值增加滤波器
-    // static float voltage_feedback_filtered = 0.0f;
-    // static uint8_t filter_init_flag = 0;
-    // if(!filter_init_flag) {
-    //     voltage_feedback_filtered = raw_voltage_rms;
-    //     filter_init_flag = 1;
-    // }
-    // voltage_feedback_filtered = 0.6f * voltage_feedback_filtered + 0.4f * raw_voltage_rms;
-    // // 独立的单环控制
-
-    switch (current_control_mode) {
-        case CONTROL_MODE_MANUAL:
-            // 手动模式：不执行任何闭环控制
-            current_reference_peak = 0.0f;
-            break;
-
-        case CONTROL_MODE_VOLTAGE:
-            // 独立电压环：直接从电压RMS反馈到调制比 (慢环，50Hz更新)
-            if (pwm_enabled) {
-                // 电压环PI控制器直接计算调制比
-                float voltage_modulation = PI_Controller_Update_Incremental(&voltage_pi, voltage_reference, ac_voltage_rms_AB);
-
-                // 限制调制比到安全范围
-                if (voltage_modulation > PI_V_OUT_MAX) voltage_modulation = PI_V_OUT_MAX;
-                if (voltage_modulation < PI_V_OUT_MIN) voltage_modulation = PI_V_OUT_MIN;
-
-                // 存储调制比供TIM1中断使用
-                pi_modulation_output = voltage_modulation;
-            }
-            break;
-
-        case CONTROL_MODE_CURRENT:
-            // 独立电流环：从电流RMS反馈到调制比 55(快环，50Hz更新)
-            if (pwm_enabled) {
-                // 电流环PI控制器直接计算调制比
-                float current_modulation = PI_Controller_Update_Incremental(&current_pi, current_reference, ac_current_rms_A);
-
-                // 限制调制比到安全范围
-                if (current_modulation > PI_I_OUT_MAX) current_modulation = PI_I_OUT_MAX;
-                if (current_modulation < PI_I_OUT_MIN) current_modulation = PI_I_OUT_MIN;
-
-                // 存储调制比供TIM1中断使用
-                pi_modulation_output = current_modulation;
-            }
-            break;
-
-        default:
-            current_reference_peak = 0.0f;
-            pi_modulation_output = 0.0f;
-            break;
-    }
-}
 /**
  * @brief 停止系统
  */
@@ -793,10 +761,7 @@ void PWM_Enable(void)
     // 使能PWM输出 (GPIO控制)
     HAL_GPIO_WritePin(GPIOE, GPIO_PIN_7, GPIO_PIN_SET);
 
-    // 启动TIM8定时器中断
-    HAL_TIM_Base_Start_IT(&htim8);
-
-    // 启动TIM8的PWM输出
+    // 启动TIM8的PWM输出 (不启动中断，因为逻辑已迁移至ADC回调)
     HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_1);  // A相
     HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_2);  // B相
     HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_3);  // C相
@@ -817,9 +782,6 @@ void PWM_Disable(void)
     HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_2);   // B相
     HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_3);   // C相
 
-    // 停止TIM8的中断
-    HAL_TIM_Base_Stop_IT(&htim8);
-
     // 清除使能标志
     pwm_enabled = 0;
 
@@ -828,9 +790,6 @@ void PWM_Disable(void)
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
 }
-
-
-
 // ============================================================================
 // PI控制器初始化函数
 // ============================================================================
@@ -885,6 +844,8 @@ void Dual_Loop_Control_Reset(void)
 
     user_regulator_info("Dual Loop Control System Reset");
 }
+
+
 void Set_Control_Mode(Control_Mode_t mode)
 {
     if (mode >= CONTROL_MODE_COUNT) return;
