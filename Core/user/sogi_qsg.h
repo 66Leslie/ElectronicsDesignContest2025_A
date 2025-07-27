@@ -80,15 +80,6 @@ static inline float SogiQsg_GetSin(const SogiQsg_t *qsg)
     return qsg->sin_theta;
 }
 
-/**
- * @brief 获取当前的cos值
- * @param qsg 指向QSG状态结构体的指针
- * @return 归一化的cos(θ)值，范围 [-1, 1]
- */
-static inline float SogiQsg_GetCos(const SogiQsg_t *qsg)
-{
-    return qsg->cos_theta;
-}
 
 /**
  * @brief 获取当前信号幅值

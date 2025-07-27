@@ -55,6 +55,29 @@ void OLED_DrawCircle(uint8_t X, uint8_t Y, uint8_t Radius, uint8_t IsFilled);
 void OLED_DrawEllipse(uint8_t X, uint8_t Y, uint8_t A, uint8_t B, uint8_t IsFilled);
 void OLED_DrawArc(uint8_t X, uint8_t Y, uint8_t Radius, int16_t StartAngle, int16_t EndAngle, uint8_t IsFilled);
 
+/* =========== 新增：行显示相关函数 =========== */
+/**
+ * @brief  设置下一次打印的起始行
+ * @param  Line 行号，范围：0-3 (对于16像素字体) 或 0-7 (对于8像素字体)
+ */
+void OLED_SetLine(uint8_t Line);
+
+/**
+ * @brief  清空指定行
+ * @param  Line 要清空的行号
+ * @param  FontSize 用于计算行高的字体
+ */
+void OLED_ClearLine(uint8_t Line, uint8_t FontSize);
+
+/**
+ * @brief  在当前行打印格式化字符串，并自动换行
+ * @param  FontSize 字体大小 (OLED_8X16 或 OLED_6X8)
+ * @param  format 格式化字符串
+ * @param  ... 可变参数
+ * @note   打印后，行号会自动+1。如果超出屏幕范围，会自动清屏并从第0行开始。
+ */
+void OLED_Println(uint8_t FontSize, const char *format, ...);
+
 /*********************函数声明*/
 
 #endif

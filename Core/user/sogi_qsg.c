@@ -85,11 +85,6 @@ void SogiQsg_UpdateVoltage(SogiQsg_t *qsg, float input_voltage)
         norm_factor = 1.0f / qsg->amplitude;
         qsg->cos_theta = qsg->v_alpha * norm_factor;  // cos(θ) = α/|α+jβ|
         qsg->sin_theta = qsg->v_beta * norm_factor;   // sin(θ) = β/|α+jβ|
-        
-        // ============================================================================
-        // 锁定状态检测
-        // ============================================================================
-        
         // 检查幅值是否稳定 (锁定判据)
         float amplitude_change = fabsf(qsg->amplitude - prev_amplitude);
         if (amplitude_change < AMPLITUDE_CHANGE_LIMIT * qsg->amplitude) {

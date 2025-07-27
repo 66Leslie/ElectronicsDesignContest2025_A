@@ -19,7 +19,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
-#include "dac.h"
 #include "dma.h"
 #include "fmac.h"
 #include "i2c.h"
@@ -56,8 +55,7 @@
 // ============================================================================
 // ADC数据缓冲区 (供user_regulator模块使用)
 // ============================================================================
-uint16_t adc_ac_buf[2];                     // AC环路缓冲区 (DMA长度=2)
-uint16_t adc_dc_buf[2];                     // DC环路缓冲区
+uint16_t adc_ac_buf[4];                     // AC环路缓冲区 (DMA长度=2)
 uint16_t adc3_reference_buf[1];             // ADC3参考信号缓冲区
 /* USER CODE END PV */
 
@@ -86,6 +84,7 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -111,7 +110,6 @@ int main(void)
   MX_USART1_UART_Init();
   MX_FMAC_Init();
   MX_TIM6_Init();
-  MX_DAC2_Init();
   /* USER CODE BEGIN 2 */
 
 
@@ -191,7 +189,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if(htim->Instance == TIM1)  // 10kHz中断
   {
-    user_regulator_tim1_callback();
+    user_regulator_tim1_callback();  // 修复：恢复TIM1中断回调
   }
   else if(htim->Instance == TIM8)  // 10kHz中断 - 三相PWM控制
   {

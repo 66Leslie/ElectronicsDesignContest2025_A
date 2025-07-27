@@ -118,6 +118,12 @@ extern  I2C_HandleTypeDef   hi2c1;	//HAL库使用，指定硬件IIC接口
  * 才会将显存数组的数据发送到OLED硬件，进行显示
  */
 uint8_t OLED_DisplayBuf[8][128];
+
+/**
+ * @brief 新增: 用于行打印的当前行号记录
+ */
+static uint8_t oled_current_line = 0;
+
 /*********************全局变量*/
 
 #ifdef OLED_USE_SW_I2C
@@ -1436,6 +1442,93 @@ void OLED_DrawArc(uint8_t X, uint8_t Y, uint8_t Radius, int16_t StartAngle, int1
 }
 
 /*********************功能函数*/
+
+
+/* ================================================================= */
+/* ===================== 新增：行显示相关函数实现 ==================== */
+/* ================================================================= */
+
+/**
+ * @brief  设置下一次打印的起始行
+ * @param  Line 行号，范围：0-3 (对于16像素字体) 或 0-7 (对于8像素字体)
+ */
+void OLED_SetLine(uint8_t Line)
+{
+    oled_current_line = Line;
+}
+
+/**
+ * @brief  清空指定行
+ * @param  Line 要清空的行号
+ * @param  FontSize 用于计算行高的字体
+ */
+void OLED_ClearLine(uint8_t Line, uint8_t FontSize)
+{
+    uint8_t y_start = 0;
+    uint8_t height = 0;
+
+    if (FontSize == OLED_8X16) {
+        y_start = Line * 16;
+        height = 16;
+    } else { // 默认为 OLED_6X8
+        y_start = Line * 8;
+        height = 8;
+    }
+
+    if (y_start < 64) {
+        OLED_ClearArea(0, y_start, 128, height);
+    }
+}
+
+
+/**
+ * @brief  在当前行打印格式化字符串，并自动换行
+ * @param  FontSize 字体大小 (OLED_8X16 或 OLED_6X8)
+ * @param  format 格式化字符串
+ * @param  ... 可变参数
+ * @note   打印后，行号会自动+1。如果超出屏幕范围，会自动清屏并从第0行开始。
+ */
+void OLED_Println(uint8_t FontSize, const char *format, ...)
+{
+    char String[128]; // 足够长的缓冲区
+    va_list arg;
+
+    // 格式化字符串
+    va_start(arg, format);
+    vsprintf(String, format, arg);
+    va_end(arg);
+
+    // 计算Y坐标和最大行数
+    uint8_t y_pos;
+    uint8_t max_lines;
+    uint8_t line_height;
+
+    if (FontSize == OLED_8X16) {
+        max_lines = 4; // 64 / 16 = 4
+        line_height = 16;
+    } else {
+        max_lines = 8; // 64 / 8 = 8
+        line_height = 8;
+    }
+
+    // 检查是否需要清屏并重置行号
+    if (oled_current_line >= max_lines) {
+        OLED_Clear();
+        oled_current_line = 0;
+    }
+
+    // 计算当前行的Y坐标
+    y_pos = oled_current_line * line_height;
+
+    // 先清空当前行，防止字符重叠
+    OLED_ClearArea(0, y_pos, 128, line_height);
+
+    // 在计算出的位置显示字符串
+    OLED_ShowString(0, y_pos, String, FontSize);
+
+    // 行号自增，为下一次打印做准备
+    oled_current_line++;
+}
 
 /*****************江协科技|版权所有****************/
 /*****************jiangxiekeji.com*****************/

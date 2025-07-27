@@ -1,6 +1,7 @@
-//
 // Created by 86195 on 25-7-14.
-// OLED 168*64 长宽比2比1
+// OLED 128*64 长宽比2比1 
+// 6*8字体下 每一行最多显示21个字符
+// 6*8字体下 最多显示16行
 
 #ifndef USER_REGULATOR_H
 #define USER_REGULATOR_H
@@ -8,10 +9,8 @@
 #include "main.h"
 #include "stdio.h"
 #include "math.h"
-#include "sogi_qsg.h"  // 新增：基于老师算法的高效锁相模块
+#include "sogi_qsg.h"      // 新增：基于老师算法的高效锁相模块
 #include "debug_config.h"  // 新增：调试配置文件
-
-
 
 // ============================================================================
 // 开环模式调制比控制变量
@@ -21,10 +20,10 @@
 #define PWM_PERIOD_TIM1 htim1.Init.Period     // TIM1的ARR
 #define PWM_PERIOD_TIM8 htim8.Init.Period     // TIM8的ARR
 #define V_DC 30.0f            // 直流母线电压 30V
-#define V_MeasureGain (0.00080586f)      // 电压测量增益 ideal = 1/( 1 / 20e3 * 300 / 3.3 * 4096) = 0.05371//y = 68.011x - 0.1784
-#define I_MeasureGain (0.00080586f)     // 电流测量增益 ideal = 1/( 1 * 2匝  * 0.625V/A *  / 3.3 * 4096) = 0.00064
-#define VacOffset     2048.0f       // AC电压偏置
-#define IacOffset     2048.0f       // AC电流偏置
+#define V_MeasureGain (0.00080586f)      // 线电压测量增益 (AB线电压, BC线电压) ideal = 1/( 1 / 20e3 * 300 / 3.3 * 4096) = 0.05371//y = 68.011x - 0.1784
+#define I_MeasureGain (0.00080586f)     // 相电流测量增益 (A相电流, B相电流) ideal = 1/( 1 * 2匝  * 0.625V/A *  / 3.3 * 4096) = 0.00064
+#define VacOffset     2048.0f       // 线电压偏置 (AB, BC线电压)
+#define IacOffset     2048.0f       // 相电流偏置 (A, B相电流)
 // ============================================================================
 // 控制模式枚举 - 支持三种控制模式
 // ============================================================================
@@ -41,14 +40,14 @@ typedef enum {
 // ============================================================================
 // --- 独立电压环 (50Hz更新) - 直接输出调制比 ---
 #define PI_KP_VOLTAGE 0.04f      // 电压环比例增益 (调制比输出，适当增大)
-#define PI_KI_VOLTAGE 0.013f      // 电压环积分增益 (调制比输出，适当增大)
-#define PI_V_OUT_MAX  0.9f       // 电压环输出最大值 (调制比，参考老师代码)
+#define PI_KI_VOLTAGE 0.02f      // 电压环积分增益 (调制比输出，适当增大)
+#define PI_V_OUT_MAX  0.9f       // 电压环输出最大值 (调制比)
 #define PI_V_OUT_MIN  0.0f       // 电压环输出最小值 (调制比)
 
 // --- 独立电流环 (50Hz更新) - 直接输出调制比 ---
 #define PI_KP_CURRENT 0.1f       // 电流环比例增益 (调制比输出)
 #define PI_KI_CURRENT 0.02f      // 电流环积分增益 (调制比输出)
-#define PI_I_OUT_MAX  0.9f       // 电流环输出最大值 (调制比，参考老师代码)
+#define PI_I_OUT_MAX  0.9f       // 电流环输出最大值 (调制比)
 #define PI_I_OUT_MIN  0.0f       // 电流环输出最小值
 
 // --- 默认参考值 ---
@@ -72,7 +71,7 @@ typedef struct {
 // 数据处理变量和测量增益系数 (参考老师代码)
 // ============================================================================
 #define DC_FILTER_SIZE 16
-#define AC_SAMPLE_SIZE 200          // AC采样点数（每通道，对应50Hz周期）10khz(OC3 8500) 50hz 200
+#define AC_SAMPLE_SIZE 400     // AC采样点数（每通道，对应50Hz周期）20khz(OC3 4250)
 
 // 保护阈值定义 (参考老师代码)
 #define IL_Peak_MAX         5.0f        // 电流峰值保护阈值 (A)
@@ -105,17 +104,18 @@ void key_proc(void);
 void Update_Disp(void);
 void Process_AC_Sample(void);
 void Process_AC_Data(void);
-void Process_DC_Data(void);
+// void Process_ref_Signal(void);  // 已废弃 - 功能移至ADC回调中
+//void Process_DC_Data(void);
 float Calculate_RMS_Real(const uint16_t* data, uint16_t length, float gain, float offset);
 void Update_DC_Filter(float voltage, float current);
 
 // ============================================================================
 // 显示页面函数声明
 // ============================================================================
-// 控制模式显示函数声明 (针对128×64 OLED优化)
+// 控制模式显示函数声明 (针对128×64 OLED优化 - 三相逆变器)
 void Display_Manual_Mode_Page(void);  // 手动模式显示（开环）
-void Display_CV_Mode_Page(void);      // 恒压模式显示
-void Display_CC_Mode_Page(void);      // 恒流模式显示
+void Display_CV_Mode_Page(void);      // 恒压模式显示（三相）
+void Display_CC_Mode_Page(void);      // 恒流模式显示（三相）
 
 
 // ============================================================================
@@ -242,8 +242,6 @@ void PWM_Disable(void);              // 禁用PWM (参考老师代码)
 // ============================================================================
 void Three_Phase_PWM_Enable(void);   // 使能三相PWM (TIM8)
 void Three_Phase_PWM_Disable(void);  // 禁用三相PWM (TIM8)
-void Set_Three_Phase_Modulation_Ratio(float ratio);  // 设置三相调制比
-void Test_Three_Phase_PWM(void);     // 三相PWM测试函数
 
 // ============================================================================
 // 信号质量检测和阈值锁相模块
@@ -253,14 +251,9 @@ void Test_Three_Phase_PWM(void);     // 三相PWM测试函数
 #define MAX_SIGNAL_AMPLITUDE    3500    // 最大信号幅度 (ADC计数)
 #define FREQUENCY_TOLERANCE     2.0f    // 频率容差 (Hz)
 #define SMOOTHNESS_THRESHOLD    100     // 平滑度阈值 (ADC计数的标准差)
-#define SYNC_CORRECTION_THRESHOLD 5     // 相位差索引超过5个点时，才进行校正
 
 // 频率关系定义
 #define REFERENCE_FREQ          50.0f   // 参考信号频率 (Hz)
-#define OUTPUT_FREQ             25.0f   // 输出信号频率 (Hz)
-#define FREQ_RATIO              2       // 频率比：参考信号/输出信号 = 50/25 = 2
-#define SAMPLES_PER_REF_CYCLE   200     // 每个参考信号周期的采样点数 (10kHz/50Hz)
-#define SAMPLES_PER_OUTPUT_CYCLE 400    // 每个输出信号周期的采样点数 (10kHz/25Hz)
 
 // 信号质量状态
 typedef enum {
@@ -301,9 +294,5 @@ void Signal_Quality_Update(uint16_t adc_value);
 // ============================================================================
 void Init_DAC_Output_Buffer(void);
 void Update_DAC_Output(void);
-
-// ============================================================================
-// 注意：移除了电流内环控制相关函数，现在使用单环电压控制
-// ============================================================================
 
 #endif //USER_REGULATOR_H
