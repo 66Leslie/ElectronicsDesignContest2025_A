@@ -13,12 +13,11 @@
 #include "debug_config.h"  // 新增：调试配置文件
 
 // ============================================================================
-// 开环模式调制比控制变量
+// 三相PWM控制变量 (合并后只使用TIM8)
 // ============================================================================
-#define SINE_TABLE_SIZE 400   // 10kHz/25Hz = 400个采样点，使用180度相位差生成第二路PWM
+#define SINE_TABLE_SIZE 400   // 10kHz/25Hz = 400个采样点，三相SPWM生成
 #define ADC_AC_BUFFER_SIZE 800  // AC环路DMA缓冲区大小 (400个采样点 × 2个通道)
-#define PWM_PERIOD_TIM1 htim1.Init.Period     // TIM1的ARR
-#define PWM_PERIOD_TIM8 htim8.Init.Period     // TIM8的ARR
+#define PWM_PERIOD_TIM8 htim8.Init.Period     // TIM8的ARR (三相PWM)
 #define V_DC 30.0f            // 直流母线电压 30V
 #define V_MeasureGain (0.00080586f)      // 线电压测量增益 (AB线电压, BC线电压) ideal = 1/( 1 / 20e3 * 300 / 3.3 * 4096) = 0.05371//y = 68.011x - 0.1784
 #define I_MeasureGain (0.00080586f)     // 相电流测量增益 (A相电流, B相电流) ideal = 1/( 1 * 2匝  * 0.625V/A *  / 3.3 * 4096) = 0.00064
@@ -90,10 +89,9 @@ void user_regulator_init(void);
 void user_regulator_main(void);
 
 // ============================================================================
-// 回调函数接口
+// 回调函数接口 (合并后只保留TIM8)
 // ============================================================================
-void user_regulator_tim1_callback(void);
-void user_regulator_tim8_callback(void);  // 新增：TIM8三相PWM回调函数
+void user_regulator_tim8_callback(void);  // TIM8三相PWM回调函数
 void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc);
 
 // ============================================================================
@@ -237,11 +235,7 @@ void USER_Regulator_Stop(void);     // 停止系统
 void PWM_Enable(void);               // 使能PWM (参考老师代码)
 void PWM_Disable(void);              // 禁用PWM (参考老师代码)
 
-// ============================================================================
-// 三相逆变器控制函数声明
-// ============================================================================
-void Three_Phase_PWM_Enable(void);   // 使能三相PWM (TIM8)
-void Three_Phase_PWM_Disable(void);  // 禁用三相PWM (TIM8)
+
 
 // ============================================================================
 // 信号质量检测和阈值锁相模块

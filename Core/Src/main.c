@@ -84,7 +84,6 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-
   HAL_Init();
 
   /* USER CODE BEGIN Init */
@@ -101,7 +100,6 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
-  MX_TIM1_Init();
   MX_ADC1_Init();
   MX_ADC2_Init();
   MX_ADC3_Init();
@@ -109,7 +107,6 @@ int main(void)
   MX_TIM8_Init();
   MX_USART1_UART_Init();
   MX_FMAC_Init();
-  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
 
 
@@ -181,17 +178,13 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 /**
- * @brief TIM1中断回调函数 - 20kHz PWM控制
+ * @brief TIM8中断回调函数 - 10kHz PWM控制
  * @param htim: 定时器句柄
  * @note 调用user_regulator模块的TIM1回调函数
  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  if(htim->Instance == TIM1)  // 10kHz中断
-  {
-    user_regulator_tim1_callback();  // 修复：恢复TIM1中断回调
-  }
-  else if(htim->Instance == TIM8)  // 10kHz中断 - 三相PWM控制
+  if(htim->Instance == TIM8)  // 10kHz中断 - 三相PWM控制
   {
     user_regulator_tim8_callback();
   }
