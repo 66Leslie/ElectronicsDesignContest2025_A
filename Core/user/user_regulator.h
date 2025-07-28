@@ -20,8 +20,14 @@
 #define V_DC 30.0f            // 直流母线电压 30V
 #define V_MeasureGain (0.00080586f)      // 线电压测量增益 (AB线电压, BC线电压) ideal = 1/( 1 / 20e3 * 300 / 3.3 * 4096) = 0.05371//y = 68.011x - 0.1784
 #define I_MeasureGain (0.00080586f)     // 相电流测量增益 (A相电流, B相电流) ideal = 1/( 1 * 2匝  * 0.625V/A *  / 3.3 * 4096) = 0.00064
-#define VacOffset     2047.0f       // 线电压偏置 (AB, BC线电压)
-#define IacOffset     2047.0f       // 相电流偏置 (A, B相电流)
+// 偏置测量相关定义
+#define OFFSET_SAMPLE_COUNT 100     // 偏置测量采样次数
+#define DEFAULT_VAC_OFFSET  2047.0f // 默认线电压偏置 (AB, BC线电压)
+#define DEFAULT_IAC_OFFSET  2047.0f // 默认相电流偏置 (A, B相电流)
+
+// 动态偏置变量声明 (在初始化时测量)
+extern float VacOffset;       // 线电压偏置 (AB, BC线电压) - 动态测量
+extern float IacOffset;       // 相电流偏置 (A, B相电流) - 动态测量
 // ============================================================================
 // 控制模式枚举 - 支持三种控制模式
 // ============================================================================
@@ -42,15 +48,17 @@ typedef enum {
 #define PI_V_OUT_MAX  0.9f       // 电压环输出最大值 (调制比)
 #define PI_V_OUT_MIN  0.0f       // 电压环输出最小值 (调制比)
 
-// --- 独立电流环 (20kHz更新) - 瞬时值控制，直接输出调制比 ---
-#define PI_KP_CURRENT 0.05f      // 电流环比例增益 (调制比输出，20kHz快环需要较小增益)
-#define PI_KI_CURRENT 0.001f     // 电流环积分增益 (调制比输出，20kHz快环需要较小积分增益)
-#define PI_I_OUT_MAX  0.9f       // 电流环输出最大值 (调制比)
-#define PI_I_OUT_MIN  0.0f       // 电流环输出最小值
+// --- αβ坐标系电流环控制参数 (20kHz更新) ---
+#define PI_KP_CURRENT_ALPHA 0.5f    // α轴电流环比例增益
+#define PI_KI_CURRENT_ALPHA 0.1f    // α轴电流环积分增益
+#define PI_KP_CURRENT_BETA  0.5f    // β轴电流环比例增益
+#define PI_KI_CURRENT_BETA  0.1f    // β轴电流环积分增益
+#define PI_I_OUT_MAX  0.9f          // 电流环输出最大值 (调制比)
+#define PI_I_OUT_MIN  -0.9f         // 电流环输出最小值 (αβ坐标系可以为负)
 
 // --- 默认参考值 ---
 #define V_REF_DEFAULT 5.0f     // 默认参考电压 (RMS)
-#define I_REF_DEFAULT 1.0f      // 默认参考电流 (RMS)
+#define I_REF_DEFAULT 0.5f      // 默认参考电流 (RMS)
 
 
 // ============================================================================
@@ -66,20 +74,73 @@ typedef struct {
 } PI_Controller_t;
 
 // ============================================================================
+// αβ坐标系电流控制器结构体
+// ============================================================================
+typedef struct {
+    // 三相电流指令值 (abc坐标系)
+    float Ia_CMD;
+    float Ib_CMD;
+    float Ic_CMD;
+
+    // αβ坐标系电压指令值
+    float Valpha_CMD;
+    float Vbeta_CMD;
+
+    // αβ坐标系误差值
+    float Error_alpha;
+    float Error_alpha_Pre;
+    float Error_beta;
+    float Error_beta_Pre;
+
+    // αβ坐标系PI控制器输出
+    float PI_Out_alpha;
+    float PI_Out_Beta;
+
+    // 前馈补偿
+    float feedforward_a;
+    float feedforward_b;
+    float feedforward_c;
+} Current_Controller_AlphaBeta_t;
+
+// ============================================================================
+// 三相调制信号结构体
+// ============================================================================
+typedef struct {
+    float Ma;  // A相调制比
+    float Mb;  // B相调制比
+    float Mc;  // C相调制比
+} Modulation_t;
+
+// ============================================================================
 // 数据处理变量和测量增益系数 (参考老师代码)
 // ============================================================================
 #define DC_FILTER_SIZE 16
-#define AC_SAMPLE_SIZE 400     // AC采样点数（每通道，对应50Hz周期）20khz(update event)
+#define AC_SAMPLE_SIZE 400     // AC采样点数（每通道，对应50Hz周期）20kHz(update event)
 
 // 保护阈值定义 (参考老师代码)
 #define IL_Peak_MAX         5.0f        // 电流峰值保护阈值 (A)
 #define Vdc_MAX             50.0f       // 直流电压保护阈值 (V)
 #define DCVol_Coef          0.025f      // 直流电压系数 (参考老师代码)
 
+// 调试开关
+#define ALPHABETA_DEBUG_PRINTF 1       // αβ坐标系控制器调试输出开关
+
 // ============================================================================
 // 高效锁相模块实例声明
 // ============================================================================
 extern SogiQsg_t g_sogi_qsg;  // 全局SOGI-QSG实例，基于老师的高效锁相算法
+
+// ============================================================================
+// 控制输出变量声明
+// ============================================================================
+extern volatile float current_reference_peak;      // 电流峰值指令 (由外环输出)
+extern volatile float current_reference_instant;   // 瞬时电流参考值 (20kHz)
+extern volatile float pi_modulation_output;        // 最终调制比输出
+extern volatile float current_feedback_instant;    // 瞬时电流反馈值
+
+// αβ坐标系电流控制器实例
+extern Current_Controller_AlphaBeta_t CurrConReg;
+extern Modulation_t Modulation;
 
 // ============================================================================
 // 用户调节器模块函数声明
@@ -121,6 +182,14 @@ void PI_Controller_Init(PI_Controller_t* pi, float kp, float ki, float output_mi
 void PI_Controller_Reset(PI_Controller_t* pi);
 // 增量式PI控制器更新函数声明
 float PI_Controller_Update_Incremental(PI_Controller_t* pi, float reference, float feedback);
+
+// ============================================================================
+// αβ坐标系电流控制器函数声明
+// ============================================================================
+void Current_Controller_AlphaBeta_Init(void);
+void Current_Controller_AlphaBeta_Reset(void);
+void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float current_B);
+float _fsat(float value, float max_val, float min_val);
 
 // ============================================================================
 // 双环控制相关函数声明
@@ -216,6 +285,13 @@ typedef union {
 } SYS_FAULT_FLAG;
 
 // ============================================================================
+// 偏置测量相关函数声明
+// ============================================================================
+void Measure_ADC_Offsets(void);     // 测量ADC偏置函数
+uint8_t Is_Offset_Measurement_Complete(void);  // 检查偏置测量是否完成
+void Reset_Offset_Measurement(void); // 重置偏置测量，重新开始测量
+
+// ============================================================================
 // 状态机相关函数声明
 // ============================================================================
 void State_Machine_Init(void);
@@ -232,6 +308,8 @@ void USER_Regulator_Start(void);    // 启动系统 (参考老师代码)
 void USER_Regulator_Stop(void);     // 停止系统
 void PWM_Enable(void);               // 使能PWM (参考老师代码)
 void PWM_Disable(void);              // 禁用PWM (参考老师代码)
+void Start_TIM8_For_Offset_Measurement(void);  // 启动TIM8用于偏置测量（保持shutdown低电平关断输出）
+void Start_TIM8_For_Offset_Measurement(void);  // 启动TIM8用于偏置测量（保持shutdown高电平）
 
 
 
