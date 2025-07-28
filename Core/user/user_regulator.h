@@ -18,16 +18,21 @@
 #define SINE_TABLE_SIZE 400   // 10kHz/25Hz = 400个采样点，三相SPWM生成
 #define PWM_PERIOD_TIM8 htim8.Init.Period     // TIM8的ARR (三相PWM)
 #define V_DC 30.0f            // 直流母线电压 30V
-#define V_MeasureGain (0.00080586f)      // 线电压测量增益 (AB线电压, BC线电压) ideal = 1/( 1 / 20e3 * 300 / 3.3 * 4096) = 0.05371//y = 68.011x - 0.1784
-#define I_MeasureGain (0.00080586f)     // 相电流测量增益 (A相电流, B相电流) ideal = 1/( 1 * 2匝  * 0.625V/A *  / 3.3 * 4096) = 0.00064
+// 修正的测量增益系数 - 基于硬件设计计算
+#define V_MeasureGain (0.00080586f)        // 线电压测量增益 (AB线电压, BC线电压)
+                                        // 计算: 1/(1/20e3 * 300/3.3 * 4096) = 0.05371
+#define I_MeasureGain (0.00080586f)        // 相电流测量增益 (A相电流, B相电流)
+                                        // 计算: 1/(1 * 2匝 * 0.625V/A / 3.3 * 4096) = 0.00064
 // 偏置测量相关定义
 #define OFFSET_SAMPLE_COUNT 100     // 偏置测量采样次数
 #define DEFAULT_VAC_OFFSET  2047.0f // 默认线电压偏置 (AB, BC线电压)
 #define DEFAULT_IAC_OFFSET  2047.0f // 默认相电流偏置 (A, B相电流)
 
-// 动态偏置变量声明 (在初始化时测量)
-extern float VacOffset;       // 线电压偏置 (AB, BC线电压) - 动态测量
-extern float IacOffset;       // 相电流偏置 (A, B相电流) - 动态测量
+// 动态偏置变量声明 (在初始化时测量) - 每个传感器独立偏置
+extern float VacOffset_AB;    // AB线电压偏置 - 动态测量
+extern float VacOffset_BC;    // BC线电压偏置 - 动态测量
+extern float IacOffset_A;     // A相电流偏置 - 动态测量
+extern float IacOffset_B;     // B相电流偏置 - 动态测量
 // ============================================================================
 // 控制模式枚举 - 支持三种控制模式
 // ============================================================================
@@ -48,11 +53,11 @@ typedef enum {
 #define PI_V_OUT_MAX  0.9f       // 电压环输出最大值 (调制比)
 #define PI_V_OUT_MIN  0.0f       // 电压环输出最小值 (调制比)
 
-// --- αβ坐标系电流环控制参数 (20kHz更新) ---
-#define PI_KP_CURRENT_ALPHA 0.5f    // α轴电流环比例增益
-#define PI_KI_CURRENT_ALPHA 0.1f    // α轴电流环积分增益
-#define PI_KP_CURRENT_BETA  0.5f    // β轴电流环比例增益
-#define PI_KI_CURRENT_BETA  0.1f    // β轴电流环积分增益
+// --- αβ坐标系电流环控制参数 (20kHz更新) - 调整参数以改善响应 ---
+#define PI_KP_CURRENT_ALPHA 2.0f    // α轴电流环比例增益 (增大以提高响应速度)
+#define PI_KI_CURRENT_ALPHA 0.5f    // α轴电流环积分增益 (增大以减少稳态误差)
+#define PI_KP_CURRENT_BETA  2.0f    // β轴电流环比例增益 (增大以提高响应速度)
+#define PI_KI_CURRENT_BETA  0.5f    // β轴电流环积分增益 (增大以减少稳态误差)
 #define PI_I_OUT_MAX  0.9f          // 电流环输出最大值 (调制比)
 #define PI_I_OUT_MIN  -0.9f         // 电流环输出最小值 (αβ坐标系可以为负)
 
@@ -290,6 +295,7 @@ typedef union {
 void Measure_ADC_Offsets(void);     // 测量ADC偏置函数
 uint8_t Is_Offset_Measurement_Complete(void);  // 检查偏置测量是否完成
 void Reset_Offset_Measurement(void); // 重置偏置测量，重新开始测量
+void Perform_Initial_Offset_Measurement(void); // 在初始化阶段完成偏置测量
 
 // ============================================================================
 // 状态机相关函数声明
@@ -364,5 +370,17 @@ void Signal_Quality_Update(uint16_t adc_value);
 // ============================================================================
 void Init_DAC_Output_Buffer(void);
 void Update_DAC_Output(void);
+
+// ============================================================================
+// SOGI滤波器测试函数声明
+// ============================================================================
+void SOGI_Filter_Test(void);
+void SOGI_Filter_Monitor(float raw_current, float filtered_current);
+
+// ============================================================================
+// 诊断函数声明
+// ============================================================================
+void Diagnostic_Print_Measurements(void);  // 诊断测量和控制问题
+void Calibrate_Measurement_System(void);   // 测量系统校准指导
 
 #endif //USER_REGULATOR_H

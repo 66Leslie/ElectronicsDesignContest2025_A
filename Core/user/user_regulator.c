@@ -8,6 +8,13 @@
 #include "key.h"
 #include "adc.h"
 #include "tim.h"
+#include "sogi_pll.h"     // 引入SOGI结构体定义
+// ============================================================================
+// 新增：为电流反馈信号创建SOGI滤波器
+// ============================================================================
+static SOGI_State sogi_filter_ia; // A相电流的SOGI滤波器
+static SOGI_State sogi_filter_ib; // B相电流的SOGI滤波器
+
 // ============================================================================
 // 三相PWM控制变量 (合并单相和三相PWM控制)
 // ============================================================================
@@ -45,10 +52,12 @@ extern uint16_t adc_ac_buf[4];              // AC环路缓冲区 (在main.c中�
 extern uint16_t adc3_reference_buf[1];      // ADC3参考信号缓冲区 (在main.c中定义)
 
 // ============================================================================
-// 动态偏置变量定义
+// 动态偏置变量定义 - 每个传感器独立偏置
 // ============================================================================
-float VacOffset = DEFAULT_VAC_OFFSET;       // 线电压偏置 (动态测量)
-float IacOffset = DEFAULT_IAC_OFFSET;       // 相电流偏置 (动态测量)
+float VacOffset_AB = DEFAULT_VAC_OFFSET;    // AB线电压偏置 (动态测量)
+float VacOffset_BC = DEFAULT_VAC_OFFSET;    // BC线电压偏置 (动态测量)
+float IacOffset_A = DEFAULT_IAC_OFFSET;     // A相电流偏置 (动态测量)
+float IacOffset_B = DEFAULT_IAC_OFFSET;     // B相电流偏置 (动态测量)
 
 // ============================================================================
 // 偏置测量相关变量
@@ -121,6 +130,44 @@ static AlphaFilter_t dc_voltage_alpha_filter;
 static AlphaFilter_t dc_current_alpha_filter;
 
 // ============================================================================
+// 新增：SOGI滤波器初始化函数
+// ============================================================================
+static void SOGI_Filter_Init(void)
+{
+    // 重置A相电流滤波器的状态
+    sogi_filter_ia.v_alpha = 0.0f;
+    sogi_filter_ia.v_beta = 0.0f;
+    sogi_filter_ia.z1 = 0.0f;
+    sogi_filter_ia.z2 = 0.0f;
+
+    // 重置B相电流滤波器的状态
+    sogi_filter_ib.v_alpha = 0.0f;
+    sogi_filter_ib.v_beta = 0.0f;
+    sogi_filter_ib.z1 = 0.0f;
+    sogi_filter_ib.z2 = 0.0f;
+}
+
+// ============================================================================
+// 新增：SOGI滤波器更新函数
+// @param sogi: SOGI状态结构体指针
+// @param input: 输入信号值
+// @return: 滤波后的v_alpha值
+// ============================================================================
+static float SOGI_Filter_Update(SOGI_State *sogi, float input)
+{
+    // 这是SOGI核心算法，直接从sogi_pll.c借鉴
+    float v_err = input - sogi->v_alpha;
+
+    // 更新SOGI内部状态 (离散形式)
+    sogi->z1 = sogi->z1 + (SOGI_K_GAIN * v_err - sogi->z2) * OMEGA_NOMINAL * SAMPLING_PERIOD;
+    sogi->v_alpha = sogi->v_alpha + sogi->z1 * SAMPLING_PERIOD;
+    sogi->z2 = sogi->z2 + sogi->v_alpha * OMEGA_NOMINAL * SAMPLING_PERIOD;
+    sogi->v_beta = sogi->z2 * SAMPLING_PERIOD; // v_beta也已生成，但我们主要用v_alpha
+
+    return sogi->v_alpha;
+}
+
+// ============================================================================
 // 用户调节器初始化函数
 // ============================================================================
 void user_regulator_init(void)
@@ -130,9 +177,13 @@ void user_regulator_init(void)
     HAL_ADCEx_Calibration_Start(&hadc2, ADC_SINGLE_ENDED);
     HAL_ADCEx_Calibration_Start(&hadc3, ADC_SINGLE_ENDED);  // 新增：ADC3校准
 
+    // 启动ADC DMA
     HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_ac_buf, 2);   // DMA长度改为2
-    HAL_ADC_Start_DMA(&hadc2, (uint32_t*)&adc_ac_buf[2], 2);   // 
-    HAL_ADC_Start_DMA(&hadc3, (uint32_t*)adc3_reference_buf, 1);  // 
+    HAL_ADC_Start_DMA(&hadc2, (uint32_t*)&adc_ac_buf[2], 2);   //
+    HAL_ADC_Start_DMA(&hadc3, (uint32_t*)adc3_reference_buf, 1);  //
+
+    // 启动TIM8用于ADC触发，但关闭PWM输出
+    Start_TIM8_For_Offset_Measurement();
 
     OLED_Init();
     OLED_Clear();
@@ -141,7 +192,14 @@ void user_regulator_init(void)
 
     // 初始化基于老师算法的高效锁相模块
     SogiQsg_Init(&g_sogi_qsg);
+
+    // 新增：初始化电流SOGI滤波器
+    SOGI_Filter_Init();
+
     key_init();
+
+    // 在初始化阶段完成偏置测量 - 确保进入主循环前偏置准确
+    Perform_Initial_Offset_Measurement();
 
     // 初始化三相PWM控制变量 (合并后统一使用)
     modulation_ratio = 0.1f;  // 从较小的值开始，安全起见
@@ -217,21 +275,29 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     }
     adc_completion_mask = 0; // 重置掩码，为下个周期做准备
 
-    // --- Part 2.1: 瞬时值采样与累加 ---
-    // 从DMA缓冲区读取当前采样值
-    float current_A = ((int16_t)adc_ac_buf[0] - IacOffset) * I_MeasureGain;
-    float voltage_AB = ((int16_t)adc_ac_buf[1] - VacOffset) * V_MeasureGain;
-    float current_B = ((int16_t)adc_ac_buf[2] - IacOffset) * I_MeasureGain;
-    float voltage_BC = ((int16_t)adc_ac_buf[3] - VacOffset) * V_MeasureGain;
+
+
+    // --- Part 2.1: 瞬时值采样与转换 (原始值) - 使用独立传感器偏置 ---
+    // 从DMA缓冲区读取当前采样值，每个传感器使用独立的偏置
+    float current_A_raw = ((int16_t)adc_ac_buf[0] - IacOffset_A) * I_MeasureGain;
+    float voltage_AB = ((int16_t)adc_ac_buf[1] - VacOffset_AB) * V_MeasureGain;
+    float current_B_raw = ((int16_t)adc_ac_buf[2] - IacOffset_B) * I_MeasureGain;
+    float voltage_BC = ((int16_t)adc_ac_buf[3] - VacOffset_BC) * V_MeasureGain;
     float voltage_AC = voltage_AB - voltage_BC;
 
-    // 更新瞬时电流反馈值 (用于电流快环)
-    current_feedback_instant = current_A;
+    // ========================================================================
+    // **核心修改：使用SOGI滤波器处理带噪声的原始电流信号**
+    // ========================================================================
+    float current_A_filtered = SOGI_Filter_Update(&sogi_filter_ia, current_A_raw);
+    float current_B_filtered = SOGI_Filter_Update(&sogi_filter_ib, current_B_raw);
 
-    // 累加平方值，用于50Hz慢环计算RMS
-    current_A_sum += current_A * current_A; 
+    // 更新瞬时电流反馈值 (用于电流快环) - 使用滤波后的值
+    current_feedback_instant = current_A_raw;
+
+    // 累加平方值，用于50Hz慢环计算RMS (修正B相电流计算错误)
+    current_A_sum += current_A_filtered * current_A_filtered;
     voltage_AB_sum += voltage_AB * voltage_AB;
-    current_B_sum += current_B * current_B;
+    current_B_sum += current_B_filtered * current_B_filtered;  // 修正：使用current_B_raw而不是current_A_raw
     voltage_BC_sum += voltage_BC * voltage_BC;
     voltage_AC_sum += voltage_AC * voltage_AC;
     slow_loop_counter++;
@@ -246,6 +312,7 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         ac_voltage_rms_AB = sqrtf(voltage_AB_sum / (float)AC_SAMPLE_SIZE) * 68.011f - 0.1784f;
         ac_current_rms_B = sqrtf(current_B_sum / (float)AC_SAMPLE_SIZE) * 5.1778f - 0.0111f;
         ac_voltage_rms_BC = sqrtf(voltage_BC_sum / (float)AC_SAMPLE_SIZE) * 68.011f - 0.1784f;
+
         
         // 2. 清空累加器
         current_A_sum = 0.0f;
@@ -265,17 +332,25 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
                 case CONTROL_MODE_CURRENT:
                     // 将RMS电流参考转换为峰值参考，供快环使用
                     current_reference_peak = current_reference * 1.414213562f;
+                    // 更新调制比输出用于显示 (取三相调制信号的平均幅值)
+                    pi_modulation_output = sqrtf(Modulation.Ma * Modulation.Ma +
+                                                Modulation.Mb * Modulation.Mb +
+                                                Modulation.Mc * Modulation.Mc) / 3.0f;
                     break;
                 case CONTROL_MODE_MANUAL:
                 default:
                     break;
             }
+
         }
+
+        // 调用诊断函数
+        Diagnostic_Print_Measurements();
     }
 
     // --- Part 2.3: 20kHz快速环 - 核心控制与PWM更新 (每次都执行) ---
     if (!pwm_enabled) {
-        // PWM关闭时，清零占空比并直接返回
+        // PWM关闭时，清零占空比并返回
         __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, 0);
         __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
         __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
@@ -287,8 +362,8 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
 
     switch (control_mode) {
         case CONTROL_MODE_CURRENT:
-            // 1. 执行αβ坐标系瞬时电流环控制
-            Current_Controller_AlphaBeta_Update(current_reference_peak, current_A, current_B);
+            // **核心修改：将滤波后的、干净的电流值送入控制器**
+            Current_Controller_AlphaBeta_Update(current_reference_peak, current_A_filtered, current_B_filtered);
             
             // 2. 限制三相调制信号
             float mod_A = _fsat(Modulation.Ma, 1.0f, -1.0f);
@@ -296,6 +371,7 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
             float mod_C = _fsat(Modulation.Mc, 1.0f, -1.0f);
 
             // 3. 计算三相PWM占空比 (调制信号转换为占空比)
+            // 修正：αβ控制器输出的调制信号范围是[-1,1]，需要转换为[0,1]再乘以PWM周期
             duty_A_float = ((mod_A + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
             duty_B_float = ((mod_B + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
             duty_C_float = ((mod_C + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
@@ -344,16 +420,6 @@ void State_Machine_Init(void)
     state_entry_time = HAL_GetTick();
     state_transition_timer = 0;
 
-    // 初始化偏置测量相关变量
-    offset_sample_count = 0;
-    voltage_offset_sum_AB = 0;
-    voltage_offset_sum_BC = 0;
-    current_offset_sum_A = 0;
-    current_offset_sum_B = 0;
-    offset_measurement_complete = 0;
-
-    // 为偏置测量启动TIM8但不输出PWM
-    Start_TIM8_For_Offset_Measurement();
 }
 void State_Machine_Update(void)
 {
@@ -381,14 +447,15 @@ void State_Machine_Update(void)
             pwm_enabled = 0;  // 禁用PWM
             DriveOpen_Analysis = 3;  // 禁止开启
 
-            // 在PWM关闭状态下测量偏置
-            if (!offset_measurement_complete) {
-                Measure_ADC_Offsets();  // 测量ADC偏置
-            } else {
-                // 偏置测量完成，进入等待状态
+            // 偏置测量已在初始化阶段完成，直接进入等待状态
+            if (offset_measurement_complete) {
                 system_state = Wait_State;
-                user_regulator_info("Offset measurement complete: VacOffset=%.1f, IacOffset=%.1f",
-                                   VacOffset, IacOffset);
+                user_regulator_info("System ready - offset measurement completed in init");
+            } else {
+                // 如果偏置测量未完成（异常情况），重新进行测量
+                user_regulator_info("Warning: Offset measurement not completed in init, retrying...");
+                Perform_Initial_Offset_Measurement();
+                system_state = Wait_State;
             }
             break;
         case Wait_State:
@@ -523,10 +590,10 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
     float F32beta = (current_B - current_C) * 0.57735026918963f;
 
     // 步骤2: 生成三相电流指令 (基于锁相环的sin/cos值)
-    // 这里使用单相指令Ia_CMD生成对称的三相指令
-    CurrConReg.Ia_CMD = Ia_CMD  * g_sogi_qsg.cos_theta;
-    CurrConReg.Ib_CMD = Ia_CMD  * (g_sogi_qsg.cos_theta * (-0.5f) + g_sogi_qsg.sin_theta * 0.8660254f);
-    CurrConReg.Ic_CMD = Ia_CMD  * (g_sogi_qsg.cos_theta * (-0.5f) - g_sogi_qsg.sin_theta * 0.8660254f);
+    // 修正：使用正确的三相对称电流指令生成
+    CurrConReg.Ia_CMD = Ia_CMD * g_sogi_qsg.cos_theta;                                               // A相: Ia_CMD * cos(θ)
+    CurrConReg.Ib_CMD = Ia_CMD * (g_sogi_qsg.cos_theta * (-0.5f) + g_sogi_qsg.sin_theta * (-0.8660254f)); // B相: Ia_CMD * cos(θ-120°)
+    CurrConReg.Ic_CMD = Ia_CMD * (g_sogi_qsg.cos_theta * (-0.5f) + g_sogi_qsg.sin_theta * (0.8660254f));  // C相: Ia_CMD * cos(θ+120°)
     
     // 步骤3: Clarke变换 - 将三相电流指令转换到αβ坐标系
     // Valpha_CMD = (2/3)*Ia_CMD - (1/3)*Ib_CMD - (1/3)*Ic_CMD
@@ -745,25 +812,14 @@ void Display_Manual_Mode_Page(void)
     // 使用统一的小字体，避免混用字体导致的行号计算问题
     OLED_SetLine(0);
 
-    // 如果正在进行偏置测量，显示测量进度
-    if (system_state == PowerUp_Check_State && !offset_measurement_complete) {
-        OLED_Println(OLED_6X8, "Measuring Offsets...");
-        OLED_Println(OLED_6X8, "Progress: %d/%d", offset_sample_count, OFFSET_SAMPLE_COUNT);
-        OLED_Println(OLED_6X8, "PWM: OFF (Required)");
-        OLED_Println(OLED_6X8, "Please wait...");
-        OLED_Println(OLED_6X8, "");
-        OLED_Println(OLED_6X8, "Current Offsets:");
-        OLED_Println(OLED_6X8, "V:%.1f I:%.1f", VacOffset, IacOffset);
-    } else {
-        // 正常显示模式
-        OLED_Println(OLED_6X8, "Mod: %.1f%%,PWM:%s", modulation_ratio * 100.0f, pwm_enabled ? "ON" : "OFF");
-        OLED_Println(OLED_6X8, "V_AB: %.2fV", ac_voltage_rms_AB);
-        OLED_Println(OLED_6X8, "I_A: %.2fA", ac_current_rms_A);
-        OLED_Println(OLED_6X8, "V_BC: %.2fV", ac_voltage_rms_BC);
-        OLED_Println(OLED_6X8, "I_B: %.2fA", ac_current_rms_B);
-        OLED_Println(OLED_6X8, "Ref: %s", Get_Reference_Signal_Name(current_reference_signal));
-        OLED_Println(OLED_6X8, "12+- 3PWM 4Ref 5Page");
-    }
+    // 正常显示模式 (偏置测量已在初始化完成)
+    OLED_Println(OLED_6X8, "Mod: %.1f%%,PWM:%s", modulation_ratio * 100.0f, pwm_enabled ? "ON" : "OFF");
+    OLED_Println(OLED_6X8, "V_AB: %.2fV", ac_voltage_rms_AB);
+    OLED_Println(OLED_6X8, "I_A: %.2fA", ac_current_rms_A);
+    OLED_Println(OLED_6X8, "V_BC: %.2fV", ac_voltage_rms_BC);
+    OLED_Println(OLED_6X8, "I_B: %.2fA", ac_current_rms_B);
+    OLED_Println(OLED_6X8, "Ref: %s", Get_Reference_Signal_Name(current_reference_signal));
+    OLED_Println(OLED_6X8, "12+- 3PWM 4Ref 5Page");
 }
 /**
  * @brief 恒压模式(CV)显示界面 - 三相逆变器
@@ -1079,47 +1135,8 @@ const char* Get_State_Name(System_State_t state)
     }
 }
 // ============================================================================
-// 偏置测量函数实现
+// 旧的偏置测量函数已删除 - 现在使用 Perform_Initial_Offset_Measurement
 // ============================================================================
-void Measure_ADC_Offsets(void)
-{
-    // 确保PWM已关闭
-    if (pwm_enabled) {
-        return;  // PWM开启时不进行偏置测量
-    }
-
-    // 累加ADC原始值 (不进行偏置补偿)
-    voltage_offset_sum_AB += adc_ac_buf[1];  // AB线电压
-    voltage_offset_sum_BC += adc_ac_buf[3];  // BC线电压
-    current_offset_sum_A += adc_ac_buf[0];   // A相电流
-    current_offset_sum_B += adc_ac_buf[2];   // B相电流
-
-    offset_sample_count++;
-
-    // 采集100次后计算平均值
-    if (offset_sample_count >= OFFSET_SAMPLE_COUNT) {
-        // 计算平均偏置值
-        float avg_voltage_offset_AB = (float)voltage_offset_sum_AB / OFFSET_SAMPLE_COUNT;
-        float avg_voltage_offset_BC = (float)voltage_offset_sum_BC / OFFSET_SAMPLE_COUNT;
-        float avg_current_offset_A = (float)current_offset_sum_A / OFFSET_SAMPLE_COUNT;
-        float avg_current_offset_B = (float)current_offset_sum_B / OFFSET_SAMPLE_COUNT;
-
-        // 使用AB线电压和BC线电压的平均值作为电压偏置
-        VacOffset = (avg_voltage_offset_AB + avg_voltage_offset_BC) / 2.0f;
-
-        // 使用A相和B相电流的平均值作为电流偏置
-        IacOffset = (avg_current_offset_A + avg_current_offset_B) / 2.0f;
-
-        // 设置测量完成标志
-        offset_measurement_complete = 1;
-
-        user_regulator_info("ADC Offset Measurement Complete:");
-        user_regulator_info("  Voltage Offset (AB): %.1f, (BC): %.1f, Final: %.1f",
-                           avg_voltage_offset_AB, avg_voltage_offset_BC, VacOffset);
-        user_regulator_info("  Current Offset (A): %.1f, (B): %.1f, Final: %.1f",
-                           avg_current_offset_A, avg_current_offset_B, IacOffset);
-    }
-}
 
 uint8_t Is_Offset_Measurement_Complete(void)
 {
@@ -1136,17 +1153,162 @@ void Reset_Offset_Measurement(void)
     current_offset_sum_B = 0;
     offset_measurement_complete = 0;
 
-    // 重置偏置值为默认值
-    VacOffset = DEFAULT_VAC_OFFSET;
-    IacOffset = DEFAULT_IAC_OFFSET;
+    // 重置所有偏置值为默认值
+    VacOffset_AB = DEFAULT_VAC_OFFSET;
+    VacOffset_BC = DEFAULT_VAC_OFFSET;
+    IacOffset_A = DEFAULT_IAC_OFFSET;
+    IacOffset_B = DEFAULT_IAC_OFFSET;
 
     user_regulator_info("Offset measurement reset - starting new measurement");
 }
 
 // ============================================================================
+// 诊断函数 - 帮助调试测量和控制问题
+// ============================================================================
+void Diagnostic_Print_Measurements(void)
+{
+    static uint32_t diag_counter = 0;
+    diag_counter++;
+
+    // 每2秒输出一次诊断信息
+    if (diag_counter >= 100) {  // 50Hz * 2秒 = 100次
+        diag_counter = 0;
+
+        user_regulator_info("=== DIAGNOSTIC INFO ===");
+        user_regulator_info("Control Mode: %s, PWM: %s",
+                           Get_Control_Mode_Name(control_mode),
+                           pwm_enabled ? "ON" : "OFF");
+        user_regulator_info("Raw ADC: IA=%d, VAB=%d, IB=%d, VBC=%d",
+                           adc_ac_buf[0], adc_ac_buf[1], adc_ac_buf[2], adc_ac_buf[3]);
+        user_regulator_info("Offsets: IA=%.0f, VAB=%.0f, IB=%.0f, VBC=%.0f",
+                           IacOffset_A, VacOffset_AB, IacOffset_B, VacOffset_BC);
+        user_regulator_info("Currents: IA=%.3fA, IB=%.3fA (Ref=%.3fA)",
+                           ac_current_rms_A, ac_current_rms_B, current_reference);
+        user_regulator_info("Voltages: VAB=%.1fV, VBC=%.1fV",
+                           ac_voltage_rms_AB, ac_voltage_rms_BC);
+        user_regulator_info("Modulation: Ma=%.3f, Mb=%.3f, Mc=%.3f",
+                           Modulation.Ma, Modulation.Mb, Modulation.Mc);
+        user_regulator_info("PI Output: %.1f%%, Peak Ref: %.3fA",
+                           pi_modulation_output * 100.0f, current_reference_peak);
+        user_regulator_info("========================");
+    }
+}
+
+// ============================================================================
+// 测量系统校准函数 - 帮助解决非线性问题
+// ============================================================================
+void Calibrate_Measurement_System(void)
+{
+    user_regulator_info("=== MEASUREMENT CALIBRATION ===");
+    user_regulator_info("请按以下步骤进行校准:");
+    user_regulator_info("1. 确保系统无负载，PWM关闭");
+    user_regulator_info("2. 按KEY1+KEY2重新测量偏置");
+    user_regulator_info("3. 接入已知负载，记录实际值与显示值");
+    user_regulator_info("4. 根据实际测量调整增益系数");
+    user_regulator_info("当前增益系数:");
+    user_regulator_info("  V_MeasureGain = %.6f", V_MeasureGain);
+    user_regulator_info("  I_MeasureGain = %.6f", I_MeasureGain);
+    user_regulator_info("===============================");
+}
+
+// ============================================================================
+// 初始偏置测量函数 - 在初始化阶段完成偏置测量
+// ============================================================================
+void Perform_Initial_Offset_Measurement(void)
+{
+    user_regulator_info("Starting initial offset measurement...");
+
+    // 重置偏置测量变量
+    offset_sample_count = 0;
+    voltage_offset_sum_AB = 0;
+    voltage_offset_sum_BC = 0;
+    current_offset_sum_A = 0;
+    current_offset_sum_B = 0;
+    offset_measurement_complete = 0;
+
+    // 确保PWM关闭，shutdown引脚为低电平
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_7, GPIO_PIN_RESET);
+    pwm_enabled = 0;
+
+    // 等待ADC和TIM8稳定
+    user_regulator_info("Waiting for ADC to stabilize...");
+    HAL_Delay(200);  // 增加等待时间确保ADC开始工作
+
+    // 验证ADC数据是否有效
+    uint16_t initial_values[4] = {adc_ac_buf[0], adc_ac_buf[1], adc_ac_buf[2], adc_ac_buf[3]};
+    HAL_Delay(10);
+    uint16_t check_values[4] = {adc_ac_buf[0], adc_ac_buf[1], adc_ac_buf[2], adc_ac_buf[3]};
+
+    // 检查ADC数据是否在更新
+    uint8_t adc_active = 0;
+    for (int i = 0; i < 4; i++) {
+        if (initial_values[i] != check_values[i]) {
+            adc_active = 1;
+            break;
+        }
+    }
+
+    if (!adc_active) {
+        user_regulator_info("Warning: ADC data may not be updating, proceeding anyway...");
+    } else {
+        user_regulator_info("ADC data is updating, starting offset measurement");
+    }
+
+    // 采集100个偏置样本
+    for (uint16_t i = 0; i < OFFSET_SAMPLE_COUNT; i++) {
+        // 等待一段时间确保ADC采样更新 (基于20kHz采样率，50us一次)
+        HAL_Delay(2); // 2ms延时，确保有新的ADC数据
+
+        // 累加ADC原始值 (不进行偏置补偿)
+        voltage_offset_sum_AB += adc_ac_buf[1];  // AB线电压
+        voltage_offset_sum_BC += adc_ac_buf[3];  // BC线电压
+        current_offset_sum_A += adc_ac_buf[0];   // A相电流
+        current_offset_sum_B += adc_ac_buf[2];   // B相电流
+
+        offset_sample_count++;
+
+        // 每10个样本显示一次进度和当前ADC值
+        if (offset_sample_count % 10 == 0) {
+            user_regulator_info("Progress: %d/%d, ADC: [%d,%d,%d,%d]",
+                               offset_sample_count, OFFSET_SAMPLE_COUNT,
+                               adc_ac_buf[0], adc_ac_buf[1], adc_ac_buf[2], adc_ac_buf[3]);
+        }
+    }
+
+    // 计算平均偏置值
+    float avg_voltage_offset_AB = (float)voltage_offset_sum_AB / OFFSET_SAMPLE_COUNT;
+    float avg_voltage_offset_BC = (float)voltage_offset_sum_BC / OFFSET_SAMPLE_COUNT;
+    float avg_current_offset_A = (float)current_offset_sum_A / OFFSET_SAMPLE_COUNT;
+    float avg_current_offset_B = (float)current_offset_sum_B / OFFSET_SAMPLE_COUNT;
+
+    // 更新偏置值
+    VacOffset_AB = avg_voltage_offset_AB;
+    VacOffset_BC = avg_voltage_offset_BC;
+    IacOffset_A = avg_current_offset_A;
+    IacOffset_B = avg_current_offset_B;
+
+    // 设置测量完成标志
+    offset_measurement_complete = 1;
+
+    user_regulator_info("Initial offset measurement completed:");
+    user_regulator_info("  Voltage Offsets - AB: %.1f, BC: %.1f", VacOffset_AB, VacOffset_BC);
+    user_regulator_info("  Current Offsets - A: %.1f, B: %.1f", IacOffset_A, IacOffset_B);
+
+    // 验证偏置测量结果 - 理论上现在所有测量值都应该接近0
+    float test_voltage_AB = ((int16_t)adc_ac_buf[1] - VacOffset_AB) * V_MeasureGain;
+    float test_voltage_BC = ((int16_t)adc_ac_buf[3] - VacOffset_BC) * V_MeasureGain;
+    float test_current_A = ((int16_t)adc_ac_buf[0] - IacOffset_A) * I_MeasureGain;
+    float test_current_B = ((int16_t)adc_ac_buf[2] - IacOffset_B) * I_MeasureGain;
+
+    user_regulator_info("Offset verification (should be near 0):");
+    user_regulator_info("  VAB: %.3fV, VBC: %.3fV", test_voltage_AB, test_voltage_BC);
+    user_regulator_info("  IA: %.3fA, IB: %.3fA", test_current_A, test_current_B);
+}
+
+// ============================================================================
 // DC系数保存
 //     const float adc2_in3_val = (float)adc2_in3_raw * 3.3f / 4096.0f;
-//     float raw_second_current = (adc2_in3_raw - IacOffset) * I_MeasureGain;
+//     float raw_second_current = (adc2_in3_raw - IacOffset_B) * I_MeasureGain;
 // ============================================================================
 // void Process_DC_Data(void)
 // {
@@ -1156,11 +1318,11 @@ void Reset_Offset_Measurement(void)
 //     // 转换为实际物理量（根据您的硬件调整转换系数）
 //     // B相电流测量 (ADC2_IN3)
 //     const float adc2_in3_val = (float)adc2_in3_raw * 3.3f / 4096.0f;  // ADC2_IN3值
-//     float raw_second_current = (adc2_in3_raw - IacOffset) * I_MeasureGain;  // B相电流增益
+//     float raw_second_current = (adc2_in3_raw - IacOffset_B) * I_MeasureGain;  // B相电流增益
 
 //     // BC线电压测量 (ADC2_IN4)
 //     const float adc2_in4_val = (float)adc2_in4_raw * 3.3f / 4096.0f;  // ADC2_IN4值
-//     float raw_second_voltage = (adc2_in4_raw - VacOffset) * V_MeasureGain;  // BC线电压增益
+//     float raw_second_voltage = (adc2_in4_raw - VacOffset_BC) * V_MeasureGain;  // BC线电压增益
 
 //     // 应用高级滤波器
 //     dc_voltage = AlphaFilter_Update(&dc_voltage_alpha_filter, raw_second_voltage);  // BC线电压
