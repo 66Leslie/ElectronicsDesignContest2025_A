@@ -48,16 +48,16 @@ typedef enum {
 // 独立环PI参数定义 - 电压环和电流环独立控制
 // ============================================================================
 // --- 独立电压环 (50Hz更新) - 直接输出调制比 ---
-#define PI_KP_VOLTAGE 0.04f      // 电压环比例增益 (调制比输出，适当增大)
-#define PI_KI_VOLTAGE 0.02f      // 电压环积分增益 (调制比输出，适当增大)
+#define PI_KP_VOLTAGE 0.03f      // 电压环比例增益 (调制比输出，适当增大)
+#define PI_KI_VOLTAGE 0.01f      // 电压环积分增益 (调制比输出，适当增大)
 #define PI_V_OUT_MAX  0.9f       // 电压环输出最大值 (调制比)
 #define PI_V_OUT_MIN  0.0f       // 电压环输出最小值 (调制比)
 
 // --- αβ坐标系电流环控制参数 (20kHz更新) - 调整参数以改善响应 ---
-#define PI_KP_CURRENT_ALPHA 2.0f    // α轴电流环比例增益 (增大以提高响应速度)
-#define PI_KI_CURRENT_ALPHA 0.5f    // α轴电流环积分增益 (增大以减少稳态误差)
-#define PI_KP_CURRENT_BETA  2.0f    // β轴电流环比例增益 (增大以提高响应速度)
-#define PI_KI_CURRENT_BETA  0.5f    // β轴电流环积分增益 (增大以减少稳态误差)
+#define PI_KP_CURRENT_ALPHA 0.5f    // α轴电流环比例增益 (增大以提高响应速度)
+#define PI_KI_CURRENT_ALPHA 0.1f    // α轴电流环积分增益 (增大以减少稳态误差)
+#define PI_KP_CURRENT_BETA  0.5f    // β轴电流环比例增益 (增大以提高响应速度)
+#define PI_KI_CURRENT_BETA  0.1f    // β轴电流环积分增益 (增大以减少稳态误差)
 #define PI_I_OUT_MAX  0.9f          // 电流环输出最大值 (调制比)
 #define PI_I_OUT_MIN  -0.9f         // 电流环输出最小值 (αβ坐标系可以为负)
 
