@@ -18,15 +18,13 @@
 #define SINE_TABLE_SIZE 400   // 10kHz/25Hz = 400个采样点，三相SPWM生成
 #define PWM_PERIOD_TIM8 htim8.Init.Period     // TIM8的ARR (三相PWM)
 #define V_DC 30.0f            // 直流母线电压 30V
-// 修正的测量增益系数 - 基于硬件设计计算
-#define V_MeasureGain (0.00080586f)        // 线电压测量增益 (AB线电压, BC线电压)
-                                        // 计算: 1/(1/20e3 * 300/3.3 * 4096) = 0.05371
-#define I_MeasureGain (0.00080586f)        // 相电流测量增益 (A相电流, B相电流)
-                                        // 计算: 1/(1 * 2匝 * 0.625V/A / 3.3 * 4096) = 0.00064
-// 偏置测量相关定义
-#define OFFSET_SAMPLE_COUNT 100     // 偏置测量采样次数
-#define DEFAULT_VAC_OFFSET  2047.0f // 默认线电压偏置 (AB, BC线电压)
-#define DEFAULT_IAC_OFFSET  2047.0f // 默认相电流偏置 (A, B相电流)
+// 修正的测量增益系数 - 基于硬件设计计算 (修正数值避免无穷大)
+#define V_MeasureGain (3.3f / 4096.0f)     // ADC转换增益: 3.3V / 4096 = 0.000805664f
+#define I_MeasureGain (3.3f / 4096.0f)     // ADC转换增益: 3.3V / 4096 = 0.000805664f
+// 偏置测量相关定义 - 基于1.65V偏置
+#define TARGET_OFFSET_VOLTAGE 1.65f // 目标偏置电压 1.65V
+#define DEFAULT_VAC_OFFSET  (TARGET_OFFSET_VOLTAGE / 3.3f * 4096.0f) // 默认线电压偏置 ≈ 2048
+#define DEFAULT_IAC_OFFSET  (TARGET_OFFSET_VOLTAGE / 3.3f * 4096.0f) // 默认相电流偏置 ≈ 2048
 
 // 动态偏置变量声明 (在初始化时测量) - 每个传感器独立偏置
 extern float VacOffset_AB;    // AB线电压偏置 - 动态测量
@@ -49,17 +47,17 @@ typedef enum {
 // ============================================================================
 // --- 独立电压环 (50Hz更新) - 直接输出调制比 ---
 #define PI_KP_VOLTAGE 0.03f      // 电压环比例增益 (调制比输出，适当增大)
-#define PI_KI_VOLTAGE 0.01f      // 电压环积分增益 (调制比输出，适当增大)
+#define PI_KI_VOLTAGE 0.012f      // 电压环积分增益 (调制比输出，适当增大)
 #define PI_V_OUT_MAX  0.9f       // 电压环输出最大值 (调制比)
 #define PI_V_OUT_MIN  0.0f       // 电压环输出最小值 (调制比)
 
-// --- αβ坐标系电流环控制参数 (20kHz更新) - 调整参数以改善响应 ---
-#define PI_KP_CURRENT_ALPHA 0.5f    // α轴电流环比例增益 (增大以提高响应速度)
-#define PI_KI_CURRENT_ALPHA 0.1f    // α轴电流环积分增益 (增大以减少稳态误差)
-#define PI_KP_CURRENT_BETA  0.5f    // β轴电流环比例增益 (增大以提高响应速度)
-#define PI_KI_CURRENT_BETA  0.1f    // β轴电流环积分增益 (增大以减少稳态误差)
-#define PI_I_OUT_MAX  0.9f          // 电流环输出最大值 (调制比)
-#define PI_I_OUT_MIN  -0.9f         // 电流环输出最小值 (αβ坐标系可以为负)
+// --- αβ坐标系电流环控制参数 (20kHz更新) - 优化参数以改善三相平衡 ---
+#define PI_KP_CURRENT_ALPHA 0.8f    // α轴电流环比例增益 (增大以提高响应速度)
+#define PI_KI_CURRENT_ALPHA 0.05f   // α轴电流环积分增益 (减小以避免积分饱和)
+#define PI_KP_CURRENT_BETA  0.8f    // β轴电流环比例增益 (增大以提高响应速度)
+#define PI_KI_CURRENT_BETA  0.05f   // β轴电流环积分增益 (减小以避免积分饱和)
+#define PI_I_OUT_MAX  1.2f          // 电流环输出最大值 (调制比，增大范围)
+#define PI_I_OUT_MIN  -1.2f         // 电流环输出最小值 (αβ坐标系可以为负)
 
 // --- 默认参考值 ---
 #define V_REF_DEFAULT 5.0f     // 默认参考电压 (RMS)
@@ -122,13 +120,9 @@ typedef struct {
 #define DC_FILTER_SIZE 16
 #define AC_SAMPLE_SIZE 400     // AC采样点数（每通道，对应50Hz周期）20kHz(update event)
 
-// 保护阈值定义 (参考老师代码)
-#define IL_Peak_MAX         5.0f        // 电流峰值保护阈值 (A)
-#define Vdc_MAX             50.0f       // 直流电压保护阈值 (V)
-#define DCVol_Coef          0.025f      // 直流电压系数 (参考老师代码)
-
 // 调试开关
-#define ALPHABETA_DEBUG_PRINTF 1       // αβ坐标系控制器调试输出开关
+#define ALPHABETA_DEBUG_PRINTF 1       // αβ坐标系控制器调试输出开关 (开启调试)
+#define CURRENT_CONTROL_DEBUG 1        // 电流控制调试开关
 
 // ============================================================================
 // 高效锁相模块实例声明
@@ -164,12 +158,7 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc);
 void Generate_Sine_Table(void);
 void key_proc(void);
 void Update_Disp(void);
-// void Process_AC_Sample(void);    // 已废弃 - 逻辑已迁移至ADC回调中
-// void Process_AC_Data(void);      // 已废弃 - 逻辑已迁移至ADC回调中
-// void Process_ref_Signal(void);   // 已废弃 - 功能移至ADC回调中
-//void Process_DC_Data(void);
 float Calculate_RMS_Real(const uint16_t* data, uint16_t length, float gain, float offset);
-void Update_DC_Filter(float voltage, float current);
 
 // ============================================================================
 // 显示页面函数声明

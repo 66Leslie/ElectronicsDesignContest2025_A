@@ -16,15 +16,15 @@
 // ============================================================================
 // SOGI-PLL 系统参数定义
 // ============================================================================
-#define SAMPLING_FREQ           10000.0f    // 10kHz ADC采样频率
-#define SAMPLING_PERIOD         (1.0f / SAMPLING_FREQ)  // 采样周期
+#define SAMPLING_FREQ           20000.0f    // 20kHz ADC采样频率 (修正为实际采样频率)
+#define SAMPLING_PERIOD         (1.0f / SAMPLING_FREQ)  // 采样周期 = 50μs
 #define GRID_FREQ_NOMINAL       50.0f       // 标称电网频率 50Hz
 #define OMEGA_NOMINAL           (2.0f * M_PI * GRID_FREQ_NOMINAL)  // 标称角频率
 
 // ============================================================================
-// SOGI-PLL 调节参数
+// SOGI-PLL 调节参数 (修正SOGI参数，避免数值不稳定)
 // ============================================================================
-#define SOGI_K_GAIN             1.0f         // SOGI增益系数 'k' (针对高噪声优化，降低以增强滤波)
+#define SOGI_K_GAIN             0.5f         // SOGI增益系数 'k' (降低增益避免振荡)
 #define PLL_KP                  0.32f       // PLL PI控制器比例增益 (从很小的值开始寻找临界增益)
 #define PLL_KI                  0.15f        // PLL PI控制器积分增益 (暂时设为0，先调P后调I)
 
