@@ -21,6 +21,13 @@
 #define ALPHA_FILTER_COEFF 0.1f     // 一阶低通滤波器系数 (0-1, 越小滤波效果越强)
 #define LIMIT_FILTER_MAX_CHANGE 5.0f // 限幅滤波器最大允许变化量
 
+// SOGI滤波器参数定义
+#define SOGI_SAMPLING_FREQ 20000.0f // 采样频率 20kHz
+#define SOGI_TARGET_FREQ 50.0f      // 目标频率 50Hz
+#define SOGI_DAMPING_FACTOR 1.414f  // 阻尼系数 (√2 for optimal response)
+#define SOGI_MAX_INPUT 10.0f        // 输入信号最大值（用于限幅）
+#define SOGI_MIN_INPUT -10.0f       // 输入信号最小值（用于限幅）
+
 // ============================================================================
 // 冒泡排序算法函数声明
 // ============================================================================
@@ -55,11 +62,7 @@ uint16_t Alpha_Filter_Uint16(uint16_t new_value, uint16_t *last_output, float al
 float Limit_Filter(float new_value, float *last_value, float max_change);
 uint16_t Limit_Filter_Uint16(uint16_t new_value, uint16_t *last_value, uint16_t max_change);
 
-// ============================================================================
-// 复合滤波算法函数声明
-// ============================================================================
-float Composite_Filter(float new_value, float buffer[], uint16_t size, uint16_t *index, 
-                      float *alpha_last, float alpha, float *limit_last, float max_change);
+
 
 // ============================================================================
 // 滤波器状态结构体定义
@@ -95,6 +98,33 @@ typedef struct {
     uint8_t initialized;            // 初始化标志
 } CompositeFilter_t;
 
+// SOGI滤波器状态结构体
+typedef struct {
+    float x1, x2;                   // 状态变量
+    float y1, y2;                   // 输出变量
+    float k;                        // 增益系数
+    float omega;                    // 角频率
+    float ts;                       // 采样周期
+    float last_input;               // 上次输入值（用于限幅）
+    uint8_t initialized;            // 初始化标志
+} SOGIFilter_t;
+
+// SOGI复合滤波器状态结构体（限幅 + SOGI）
+typedef struct {
+    LimitFilter_t limit_filter;     // 限幅滤波器
+    SOGIFilter_t sogi_filter;       // SOGI滤波器
+    uint8_t initialized;            // 初始化标志
+} SOGICompositeFilter_t;
+// ============================================================================
+// 复合滤波算法函数声明
+// ============================================================================
+float Composite_Filter(float new_value, float buffer[], uint16_t size, uint16_t *index, 
+                      float *alpha_last, float alpha, float *limit_last, float max_change);
+
+float SOGICompositeFilter_Update(SOGICompositeFilter_t *filter, float new_value);
+void SOGICompositeFilter_Init(SOGICompositeFilter_t *filter, float target_freq, float sampling_freq,
+                             float damping_factor, float max_change, float initial_value);
+void SOGICompositeFilter_Reset(SOGICompositeFilter_t *filter);
 // ============================================================================
 // 滤波器初始化和操作函数声明
 // ============================================================================
@@ -107,8 +137,20 @@ float AlphaFilter_Update(AlphaFilter_t *filter, float new_value);
 void LimitFilter_Init(LimitFilter_t *filter, float max_change, float initial_value);
 float LimitFilter_Update(LimitFilter_t *filter, float new_value);
 
-void CompositeFilter_Init(CompositeFilter_t *filter, float *buffer, uint16_t size, 
+void CompositeFilter_Init(CompositeFilter_t *filter, float *buffer, uint16_t size,
                          float alpha, float max_change, float initial_value);
 float CompositeFilter_Update(CompositeFilter_t *filter, float new_value);
+
+// ============================================================================
+// SOGI滤波器函数声明
+// ============================================================================
+void SOGIFilter_Init(SOGIFilter_t *filter, float target_freq, float sampling_freq, float damping_factor);
+float SOGIFilter_Update(SOGIFilter_t *filter, float input);
+void SOGIFilter_Reset(SOGIFilter_t *filter);
+
+void SOGICompositeFilter_Init(SOGICompositeFilter_t *filter, float target_freq, float sampling_freq,
+                             float damping_factor, float max_change, float initial_value);
+float SOGICompositeFilter_Update(SOGICompositeFilter_t *filter, float new_value);
+void SOGICompositeFilter_Reset(SOGICompositeFilter_t *filter);
 
 #endif // DATA_PROCESS_H

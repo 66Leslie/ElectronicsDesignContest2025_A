@@ -112,12 +112,7 @@ typedef struct {
 // ============================================================================
 // 数据处理变量和测量增益系数 (参考老师代码)
 // ============================================================================
-#define DC_FILTER_SIZE 16
 #define AC_SAMPLE_SIZE 400     // AC采样点数（每通道，对应50Hz周期）20kHz(update event)
-
-// 调试开关
-#define ALPHABETA_DEBUG_PRINTF 0       // αβ坐标系控制器调试输出开关
-
 // ============================================================================
 // 高效锁相模块实例声明
 // ============================================================================
@@ -149,10 +144,8 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc);
 // ============================================================================
 // 内部函数声明
 // ============================================================================
-void Generate_Sine_Table(void);
 void key_proc(void);
 void Update_Disp(void);
-float Calculate_RMS_Real(const uint16_t* data, uint16_t length, float gain, float offset);
 
 // ============================================================================
 // 显示页面函数声明
@@ -161,7 +154,6 @@ float Calculate_RMS_Real(const uint16_t* data, uint16_t length, float gain, floa
 void Display_Manual_Mode_Page(void);  // 手动模式显示（开环）
 void Display_CV_Mode_Page(void);      // 恒压模式显示（三相）
 void Display_CC_Mode_Page(void);      // 恒流模式显示（三相）
-
 
 // ============================================================================
 // PI控制器函数声明
@@ -284,10 +276,8 @@ void Perform_Initial_Offset_Measurement(void); // 在初始化阶段完成偏置
 // 状态机相关函数声明
 // ============================================================================
 void State_Machine_Init(void);
-void State_Machine_Update(void);
-System_State_t Get_Current_State(void);
+void State_Machine_PLL(void);
 void Set_System_State(System_State_t new_state);
-const char* Get_State_Name(System_State_t state);
 void Set_Start_CMD(uint16_t cmd);  // 设置启动命令 (供按键控制)
 
 // ============================================================================
@@ -298,9 +288,6 @@ void USER_Regulator_Stop(void);     // 停止系统
 void PWM_Enable(void);               // 使能PWM (参考老师代码)
 void PWM_Disable(void);              // 禁用PWM (参考老师代码)
 void Start_TIM8_For_Offset_Measurement(void);  // 启动TIM8用于偏置测量（保持shutdown低电平关断输出）
-void Start_TIM8_For_Offset_Measurement(void);  // 启动TIM8用于偏置测量（保持shutdown高电平）
-
-
 
 // ============================================================================
 // 信号质量检测和阈值锁相模块
@@ -340,30 +327,5 @@ typedef struct {
     uint16_t zero_crossings; // 过零点数量
     Signal_Quality_t quality; // 信号质量评估
 } Signal_Analysis_t;
-
-
-// ============================================================================
-// 信号质量检测函数声明
-// ============================================================================
-void Signal_Quality_Init(void);
-void Signal_Quality_Update(uint16_t adc_value);
-
-// ============================================================================
-// DAC输出相关函数声明
-// ============================================================================
-void Init_DAC_Output_Buffer(void);
-void Update_DAC_Output(void);
-
-// ============================================================================
-// SOGI滤波器测试函数声明
-// ============================================================================
-void SOGI_Filter_Test(void);
-void SOGI_Filter_Monitor(float raw_current, float filtered_current);
-
-// ============================================================================
-// 诊断函数声明
-// ============================================================================
-void Diagnostic_Print_Measurements(void);  // 诊断测量和控制问题
-void Calibrate_Measurement_System(void);   // 测量系统校准指导
 
 #endif //USER_REGULATOR_H

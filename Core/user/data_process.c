@@ -464,3 +464,142 @@ float CompositeFilter_Update(CompositeFilter_t *filter, float new_value)
 
     return step3;
 }
+
+// ============================================================================
+// SOGI滤波器算法实现
+// ============================================================================
+
+/*
+ * 函数名：void SOGIFilter_Init(SOGIFilter_t *filter, float target_freq, float sampling_freq, float damping_factor)
+ * 作用：初始化SOGI滤波器
+ * 输入：filter - SOGI滤波器结构体指针，target_freq - 目标频率(Hz)，sampling_freq - 采样频率(Hz)，damping_factor - 阻尼系数
+ * 返回值：无
+ * 备注：SOGI（Second Order Generalized Integrator）是一种二阶广义积分器，特别适用于提取特定频率的正弦信号
+ */
+void SOGIFilter_Init(SOGIFilter_t *filter, float target_freq, float sampling_freq, float damping_factor)
+{
+    // 计算角频率
+    filter->omega = 2.0f * M_PI * target_freq;
+
+    // 计算采样周期
+    filter->ts = 1.0f / sampling_freq;
+
+    // 计算增益系数
+    filter->k = damping_factor;
+
+    // 初始化状态变量
+    filter->x1 = 0.0f;
+    filter->x2 = 0.0f;
+    filter->y1 = 0.0f;
+    filter->y2 = 0.0f;
+    filter->last_input = 0.0f;
+
+    filter->initialized = 1;
+}
+
+/*
+ * 函数名：float SOGIFilter_Update(SOGIFilter_t *filter, float input)
+ * 作用：更新SOGI滤波器
+ * 输入：filter - SOGI滤波器结构体指针，input - 输入信号
+ * 返回值：float - 滤波后的信号（同相分量）
+ * 备注：使用双线性变换实现的离散化SOGI滤波器，输出为提取的基波分量
+ */
+float SOGIFilter_Update(SOGIFilter_t *filter, float input)
+{
+    if (!filter->initialized) return input;
+
+    // SOGI离散化实现（使用双线性变换）
+    // 连续时间SOGI方程：
+    // dx1/dt = k*omega*(input - x1) - omega*x2
+    // dx2/dt = omega*x1
+    // y1 = x1 (同相分量)
+    // y2 = x2 (正交分量)
+
+    float omega_ts = filter->omega * filter->ts;
+    float k_omega_ts = filter->k * omega_ts;
+
+    // 使用欧拉法进行数值积分
+    float dx1 = k_omega_ts * (input - filter->x1) - omega_ts * filter->x2;
+    float dx2 = omega_ts * filter->x1;
+
+    // 更新状态变量
+    filter->x1 += dx1;
+    filter->x2 += dx2;
+
+    // 输出同相分量（滤波后的信号）
+    filter->y1 = filter->x1;
+    filter->y2 = filter->x2;  // 正交分量（可用于相位检测等）
+
+    return filter->y1;
+}
+
+/*
+ * 函数名：void SOGIFilter_Reset(SOGIFilter_t *filter)
+ * 作用：重置SOGI滤波器状态
+ */
+void SOGIFilter_Reset(SOGIFilter_t *filter)
+{
+    if (!filter->initialized) return;
+
+    filter->x1 = 0.0f;
+    filter->x2 = 0.0f;
+    filter->y1 = 0.0f;
+    filter->y2 = 0.0f;
+    filter->last_input = 0.0f;
+}
+
+/*
+ * 函数名：void SOGICompositeFilter_Init(SOGICompositeFilter_t *filter, float target_freq, float sampling_freq,
+ *                                      float damping_factor, float max_change, float initial_value)
+ * 作用：初始化SOGI复合滤波器（限幅 + SOGI）
+ * 输入：filter - 复合滤波器结构体指针，target_freq - 目标频率，sampling_freq - 采样频率
+ *       damping_factor - 阻尼系数，max_change - 限幅最大变化量，initial_value - 初始值
+ * 返回值：无
+ * 备注：先进行限幅滤波去除异常值，再使用SOGI提取基波分量，适用于含噪声的50Hz正弦信号
+ */
+void SOGICompositeFilter_Init(SOGICompositeFilter_t *filter, float target_freq, float sampling_freq,
+                             float damping_factor, float max_change, float initial_value)
+{
+    // 初始化限幅滤波器
+    LimitFilter_Init(&filter->limit_filter, max_change, initial_value);
+
+    // 初始化SOGI滤波器
+    SOGIFilter_Init(&filter->sogi_filter, target_freq, sampling_freq, damping_factor);
+
+    filter->initialized = 1;
+}
+
+/*
+ * 函数名：float SOGICompositeFilter_Update(SOGICompositeFilter_t *filter, float new_value)
+ * 作用：更新SOGI复合滤波器
+ * 输入：filter - 复合滤波器结构体指针，new_value - 新的输入值
+ * 返回值：float - 滤波后的值
+ * 备注：对于20kHz采样的50Hz信号，先限幅再SOGI滤波，有效提取基波分量
+ */
+float SOGICompositeFilter_Update(SOGICompositeFilter_t *filter, float new_value)
+{
+    if (!filter->initialized) return new_value;
+
+    // 第一步：限幅滤波，去除异常的跳变值
+    float step1 = LimitFilter_Update(&filter->limit_filter, new_value);
+
+    // 第二步：SOGI滤波，提取50Hz基波分量
+    float step2 = SOGIFilter_Update(&filter->sogi_filter, step1);
+
+    return step2;
+}
+
+/*
+ * 函数名：void SOGICompositeFilter_Reset(SOGICompositeFilter_t *filter)
+ * 作用：重置SOGI复合滤波器状态
+ */
+void SOGICompositeFilter_Reset(SOGICompositeFilter_t *filter)
+{
+    if (!filter->initialized) return;
+
+    // 重置限幅滤波器（保持配置参数）
+    filter->limit_filter.last_value = 0.0f;
+
+    // 重置SOGI滤波器
+    SOGIFilter_Reset(&filter->sogi_filter);
+}

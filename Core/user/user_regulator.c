@@ -68,6 +68,7 @@ volatile uint32_t state_transition_timer = 0;               // 状态转换定�
 // 高效锁相模块实例定义
 // ============================================================================
 SogiQsg_t g_sogi_qsg;  // 全局SOGI-QSG实例，基于老师的高效锁相算法
+SOGICompositeFilter_t sogi_filter;  // SOGI复合滤波器实例
 
 // ============================================================================
 // 显示相关变量
@@ -132,6 +133,13 @@ void user_regulator_init(void)
     Dual_Loop_Control_Init();
     // 初始化状态机,进入等待状态
     State_Machine_Init();
+    // 初始化SOGI复合滤波器
+    SOGICompositeFilter_Init(&sogi_filter, 
+                            SOGI_TARGET_FREQ,      // 50Hz
+                            SOGI_SAMPLING_FREQ,    // 20kHz
+                            SOGI_DAMPING_FACTOR,   // 1.414
+                            0.026f,                  // 限幅变化量
+                            1.65f);                // 初始值（偏置）
     // 初始化参考信号选择
     current_reference_signal = REF_SIGNAL_INTERNAL;  // 默认使用内部参考信号
 }
@@ -143,7 +151,7 @@ void user_regulator_main(void)
 {
     // 1. 处理按键输入
     key_proc();
-    //State_Machine_Update();
+    //State_Machine_PLL();
     // 2. 更新显示
     Update_Disp();
 }
@@ -192,30 +200,33 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     float current_B_base = ((int16_t)adc_ac_buf[2] - IacOffset_B) * MeasureGain;
     float voltage_BC_base = ((int16_t)adc_ac_buf[3] - VacOffset_BC) * MeasureGain;
 
-    // 限幅滤波器：限制变化幅度，平滑信号
-    static float current_A_last = 0.0f;
-    static float current_B_last = 0.0f;
-    static float voltage_AB_last = 0.0f;
-    static float voltage_BC_last = 0.0f;
-    static uint8_t filter_initialized = 0;
+    // // 限幅滤波器：限制变化幅度，平滑信号
+    // static float current_A_last = 0.0f;
+    // static float current_B_last = 0.0f;
+    // static float voltage_AB_last = 0.0f;
+    // static float voltage_BC_last = 0.0f;
+    // static uint8_t filter_initialized = 0;
 
-    // 首次运行时初始化滤波器
-    if (!filter_initialized) {
-        current_A_last = IacOffset_A * MeasureGain;
-        current_B_last = IacOffset_B * MeasureGain;
-        voltage_AB_last = VacOffset_AB * MeasureGain;
-        voltage_BC_last = VacOffset_BC * MeasureGain;
-        filter_initialized = 1;
-    }
-
-    const float MAX_CHANGE_voltage = 0.02f;  // 最大变化量限制（V）
-    const float MAX_CHANGE_current = 0.02f;//sino（0.45）× 2=0.01570780177742266781326489
+    // // 首次运行时初始化滤波器
+    // if (!filter_initialized) {
+    //     current_A_last = IacOffset_A * MeasureGain;
+    //     current_B_last = IacOffset_B * MeasureGain;
+    //     voltage_AB_last = VacOffset_AB * MeasureGain;
+    //     voltage_BC_last = VacOffset_BC * MeasureGain;
+    //     filter_initialized = 1;
+    // }
 
     // 应用限幅滤波器 - 使用data_process.c中的Limit_Filter函数
-    float current_A_filtered = Limit_Filter(current_A_base, &current_A_last, MAX_CHANGE_current);
-    float current_B_filtered = Limit_Filter(current_B_base, &current_B_last, MAX_CHANGE_current);
-    float voltage_AB_filtered = Limit_Filter(voltage_AB_base, &voltage_AB_last, MAX_CHANGE_voltage);
-    float voltage_BC_filtered = Limit_Filter(voltage_BC_base, &voltage_BC_last, MAX_CHANGE_voltage);
+    //const float MAX_CHANGE = 0.026f;//sin(0.45)/3.3=0.02591
+    // float current_A_filtered = Limit_Filter(current_A_base, &current_A_last, MAX_CHANGE);
+    // float current_B_filtered = Limit_Filter(current_B_base, &current_B_last, MAX_CHANGE);
+    // float voltage_AB_filtered = Limit_Filter(voltage_AB_base, &voltage_AB_last, MAX_CHANGE);
+    // float voltage_BC_filtered = Limit_Filter(voltage_BC_base, &voltage_BC_last, MAX_CHANGE);
+    // 使用SOGI复合滤波器
+    float current_A_filtered = SOGICompositeFilter_Update(&sogi_filter, current_A_base);
+    float current_B_filtered = SOGICompositeFilter_Update(&sogi_filter, current_B_base);
+    float voltage_AB_filtered = SOGICompositeFilter_Update(&sogi_filter, voltage_AB_base);
+    float voltage_BC_filtered = SOGICompositeFilter_Update(&sogi_filter, voltage_BC_base);
 
     // 累加基础值的平方（用于RMS计算）- 添加数值保护
     // 限制基础值范围，避免平方后溢出
@@ -347,97 +358,6 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
 }
 // ============================================================================
-// 状态机相关函数实现
-// ============================================================================
-void State_Machine_Init(void)
-{
-    // 偏置测量已在初始化阶段完成，直接进入等待状态
-    system_state = Wait_State;  // 跳过PowerUp_Check_State，直接进入等待状态
-    state_entry_time = HAL_GetTick();
-    state_transition_timer = 0;
-
-}
-void State_Machine_Update(void)
-{
-    // 参考老师代码的状态机逻辑，基于锁相环过零点控制
-    static uint16_t PWM_Delay_Count = 0;    // PWM延时计数器 (10kHz计数)
-    static uint16_t DriveOpen_Analysis = 3;  // 驱动状态 (0:可开启, 1:预备状态, 2:已开启, 3:禁止开启)
-    static int GridVoltage_State = 0;  // 过零点状态
-    static int Last_GridVoltage_State = 1;  // 上次过零点状态
-
-    // 基于锁相环cos_theta的过零点检测
-    float cos_theta = g_sogi_qsg.cos_theta;
-    if((cos_theta > -0.05f) && (cos_theta < 0.05f)) {
-        GridVoltage_State = 0;  // 过零点
-    } else {
-        GridVoltage_State = 1;  // 非过零点
-    }
-
-    // 检测过零点边沿 (从非过零点到过零点的跳变)
-    int zero_crossing_detected = (Last_GridVoltage_State == 1) && (GridVoltage_State == 0);
-    Last_GridVoltage_State = GridVoltage_State;
-
-    // 状态机逻辑 (参考老师代码，增强过零点控制)
-    switch(system_state) {
-        case Wait_State:
-            pwm_enabled = 0;  // 确保PWM关闭
-            if(Start_CMD == 0) {  // 收到启动命令
-                system_state = Check_State;
-            }
-            break;
-        case Check_State:
-            // 检查参考信号状态和锁相环状态
-            if(current_reference_signal == REF_SIGNAL_INTERNAL)//去除锁相判断，进行测试
-            //if(SogiQsg_IsLocked(&g_sogi_qsg) || current_reference_signal == REF_SIGNAL_INTERNAL)
-             {
-                DriveOpen_Analysis = 0;  // 可以打开驱动
-                system_state = Running_State;
-                user_regulator_info("State: Check -> Running (Ref: %s, PLL: %s)",
-                                   Get_Reference_Signal_Name(current_reference_signal),
-                                   g_sogi_qsg.is_locked ? "LOCKED" : "UNLOCKED");
-            }
-            break;
-        case Running_State:
-            if(Start_CMD == 1 && (DriveOpen_Analysis == 2)) {
-                // 收到停止命令且驱动已开启
-                pwm_enabled = 0;  // 立即禁用PWM
-                DriveOpen_Analysis = 3;  // 禁止开启
-                system_state = Stop_State;
-                user_regulator_info("State: Running -> Stop");
-            } else {
-                if(DriveOpen_Analysis == 0) {  // 驱动可以打开，等待过零点
-                    if(zero_crossing_detected) {  // 检测到过零点
-                        DriveOpen_Analysis = 1;  // 进入预备状态
-                        PWM_Delay_Count = 0;     // 重置延时计数器
-                    }
-                } else if(DriveOpen_Analysis == 1) {  // 预备状态，等待100ms
-                    PWM_Delay_Count++;
-                    // 等待100ms = 1000个10kHz周期 (50Hz的4个周期)
-                    if(PWM_Delay_Count >= 1000) {
-                        PWM_Delay_Count = 0;
-                        pwm_enabled = 1;  // 使能PWM
-                        DriveOpen_Analysis = 2;  // 已经打开驱动
-                        user_regulator_info("PWM Enabled after 100ms delay");
-                    }
-                }
-                // DriveOpen_Analysis == 2 时，PWM已开启，保持运行状态
-            }
-            break;
-        case Stop_State:
-            pwm_enabled = 0;  // 确保PWM关闭
-            DriveOpen_Analysis = 3;  // 禁止开启
-            system_state = Wait_State;
-            break;
-        case Permanent_Fault_State:
-            pwm_enabled = 0;  // 禁用PWM
-            DriveOpen_Analysis = 3;  // 禁止开启
-            break;
-        default:
-            system_state = Wait_State;
-            break;
-    }
-}
-// ============================================================================
 // 增量式PI控制器更新函数
 // ============================================================================
 float PI_Controller_Update_Incremental(PI_Controller_t* pi, float reference, float feedback)
@@ -523,6 +443,7 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
     // 步骤4: 计算α轴误差并更新PI控制器
     CurrConReg.Error_alpha = CurrConReg.Valpha_CMD - F32alpha;
     float delta_alpha = (PI_KP_CURRENT_ALPHA * (CurrConReg.Error_alpha - CurrConReg.Error_alpha_Pre)) + (PI_KI_CURRENT_ALPHA * CurrConReg.Error_alpha);
+    delta_alpha = _fsat(delta_alpha,0.02,-0.02);//限制最大变化量
     CurrConReg.PI_Out_alpha += delta_alpha;
 
     // α轴输出限幅
@@ -531,6 +452,7 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
     // 步骤5: 计算β轴误差并更新PI控制器
     CurrConReg.Error_beta = CurrConReg.Vbeta_CMD - F32beta;
     float delta_beta = (PI_KP_CURRENT_BETA * (CurrConReg.Error_beta - CurrConReg.Error_beta_Pre)) + (PI_KI_CURRENT_BETA * CurrConReg.Error_beta);
+    delta_beta = _fsat(delta_beta,0.02,-0.02);//限制最大变化量
     CurrConReg.PI_Out_Beta += delta_beta;
 
     // β轴输出限幅
@@ -753,6 +675,97 @@ void Display_CC_Mode_Page(void)
     OLED_Println(OLED_6X8, "A:%.2fA B:%.2fA", ac_current_rms_A, ac_current_rms_B);
     OLED_Println(OLED_6X8, "AB:%.1fV BC:%.1fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
     OLED_Println(OLED_6X8, "K1:+ K2:- K4:Ref K5:Page");
+}
+// ============================================================================
+// 状态机相关函数实现
+// ============================================================================
+void State_Machine_Init(void)
+{
+    // 偏置测量已在初始化阶段完成，直接进入等待状态
+    system_state = Wait_State;  // 跳过PowerUp_Check_State，直接进入等待状态
+    state_entry_time = HAL_GetTick();
+    state_transition_timer = 0;
+
+}
+void State_Machine_PLL(void)
+{
+    // 参考老师代码的状态机逻辑，基于锁相环过零点控制
+    static uint16_t PWM_Delay_Count = 0;    // PWM延时计数器 (10kHz计数)
+    static uint16_t DriveOpen_Analysis = 3;  // 驱动状态 (0:可开启, 1:预备状态, 2:已开启, 3:禁止开启)
+    static int GridVoltage_State = 0;  // 过零点状态
+    static int Last_GridVoltage_State = 1;  // 上次过零点状态
+
+    // 基于锁相环cos_theta的过零点检测
+    float cos_theta = g_sogi_qsg.cos_theta;
+    if((cos_theta > -0.05f) && (cos_theta < 0.05f)) {
+        GridVoltage_State = 0;  // 过零点
+    } else {
+        GridVoltage_State = 1;  // 非过零点
+    }
+
+    // 检测过零点边沿 (从非过零点到过零点的跳变)
+    int zero_crossing_detected = (Last_GridVoltage_State == 1) && (GridVoltage_State == 0);
+    Last_GridVoltage_State = GridVoltage_State;
+
+    // 状态机逻辑 (参考老师代码，增强过零点控制)
+    switch(system_state) {
+        case Wait_State:
+            pwm_enabled = 0;  // 确保PWM关闭
+            if(Start_CMD == 0) {  // 收到启动命令
+                system_state = Check_State;
+            }
+            break;
+        case Check_State:
+            // 检查参考信号状态和锁相环状态
+            if(current_reference_signal == REF_SIGNAL_INTERNAL)//去除锁相判断，进行测试
+            //if(SogiQsg_IsLocked(&g_sogi_qsg) || current_reference_signal == REF_SIGNAL_INTERNAL)
+             {
+                DriveOpen_Analysis = 0;  // 可以打开驱动
+                system_state = Running_State;
+                user_regulator_info("State: Check -> Running (Ref: %s, PLL: %s)",
+                                   Get_Reference_Signal_Name(current_reference_signal),
+                                   g_sogi_qsg.is_locked ? "LOCKED" : "UNLOCKED");
+            }
+            break;
+        case Running_State:
+            if(Start_CMD == 1 && (DriveOpen_Analysis == 2)) {
+                // 收到停止命令且驱动已开启
+                pwm_enabled = 0;  // 立即禁用PWM
+                DriveOpen_Analysis = 3;  // 禁止开启
+                system_state = Stop_State;
+                user_regulator_info("State: Running -> Stop");
+            } else {
+                if(DriveOpen_Analysis == 0) {  // 驱动可以打开，等待过零点
+                    if(zero_crossing_detected) {  // 检测到过零点
+                        DriveOpen_Analysis = 1;  // 进入预备状态
+                        PWM_Delay_Count = 0;     // 重置延时计数器
+                    }
+                } else if(DriveOpen_Analysis == 1) {  // 预备状态，等待100ms
+                    PWM_Delay_Count++;
+                    // 等待100ms = 1000个10kHz周期 (50Hz的4个周期)
+                    if(PWM_Delay_Count >= 1000) {
+                        PWM_Delay_Count = 0;
+                        pwm_enabled = 1;  // 使能PWM
+                        DriveOpen_Analysis = 2;  // 已经打开驱动
+                        user_regulator_info("PWM Enabled after 100ms delay");
+                    }
+                }
+                // DriveOpen_Analysis == 2 时，PWM已开启，保持运行状态
+            }
+            break;
+        case Stop_State:
+            pwm_enabled = 0;  // 确保PWM关闭
+            DriveOpen_Analysis = 3;  // 禁止开启
+            system_state = Wait_State;
+            break;
+        case Permanent_Fault_State:
+            pwm_enabled = 0;  // 禁用PWM
+            DriveOpen_Analysis = 3;  // 禁止开启
+            break;
+        default:
+            system_state = Wait_State;
+            break;
+    }
 }
 // ============================================================================
 // αβ坐标系电流控制器复位函数

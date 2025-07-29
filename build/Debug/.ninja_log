@@ -22,7 +22,7 @@
 6841	7707	7752070490921415	cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir/__/__/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_tim_ex.c.obj	a1c7c8c9fc2c751b
 264	842	7754735788201455	CMakeFiles/three_phase_spwm.dir/Core/user/sogi_pll.c.obj	9a9bbe420190fa9f
 6681	7568	7752070489545436	cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir/__/__/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_tim.c.obj	ce64a165ae3519
-2	552	7754992732302402	CMakeFiles/three_phase_spwm.dir/Core/user/user_regulator.c.obj	da87209f17905a36
+2	551	7754996799149731	CMakeFiles/three_phase_spwm.dir/Core/user/user_regulator.c.obj	da87209f17905a36
 2753	6318	7752070448526310	CMakeFiles/three_phase_spwm.dir/Core/user/sogi_qsg.c.obj	c35510185d49b9e3
 2896	6509	7752070450804871	CMakeFiles/three_phase_spwm.dir/Core/Src/OLED.c.obj	18c97dde186ba57a
 5090	7352	7752070471952014	cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir/__/__/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_exti.c.obj	8bd917490060e8e0
@@ -43,9 +43,13 @@
 6319	7354	7752070486049674	cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir/__/__/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_i2c.c.obj	4b149e53474edca3
 6509	7354	7752070487253001	cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir/__/__/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_i2c_ex.c.obj	4446ba0fb3b2a88e
 7199	7939	7752070493270091	cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir/__/__/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart_ex.c.obj	36b089e0b0238105
-552	1138	7754992738042753	three_phase_spwm.elf	235a13a58173f0a1
-1	953	7754996034201732	build.ninja	72ef2123b8bcb2a7
-3	545	7754996350599492	CMakeFiles/three_phase_spwm.dir/Core/user/user_regulator.c.obj	da87209f17905a36
-545	1121	7754996356336210	three_phase_spwm.elf	235a13a58173f0a1
-2	551	7754996799149731	CMakeFiles/three_phase_spwm.dir/Core/user/user_regulator.c.obj	da87209f17905a36
 551	1120	7754996804773526	three_phase_spwm.elf	235a13a58173f0a1
+1	953	7755090032065499	build.ninja	72ef2123b8bcb2a7
+10	669	7755091292653252	CMakeFiles/three_phase_spwm.dir/Core/Src/main.c.obj	ada47d8088b147e8
+108	827	7755091294188557	CMakeFiles/three_phase_spwm.dir/Core/user/user_regulator.c.obj	da87209f17905a36
+197	860	7755091294564642	CMakeFiles/three_phase_spwm.dir/Core/user/data_process.c.obj	94e28ee91a4c9263
+3	602	7755091694151012	CMakeFiles/three_phase_spwm.dir/Core/user/user_regulator.c.obj	da87209f17905a36
+90	664	7755091694757462	CMakeFiles/three_phase_spwm.dir/Core/user/data_process.c.obj	94e28ee91a4c9263
+2	615	7755094248344748	CMakeFiles/three_phase_spwm.dir/Core/user/user_regulator.c.obj	da87209f17905a36
+112	669	7755094248892456	CMakeFiles/three_phase_spwm.dir/Core/user/data_process.c.obj	94e28ee91a4c9263
+669	1272	7755094254850714	three_phase_spwm.elf	235a13a58173f0a1
