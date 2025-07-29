@@ -346,17 +346,16 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
             current_reference_peak = current_reference * 1.414213562f;
             Current_Controller_AlphaBeta_Update(current_reference_peak, current_A_calibrated, current_B_calibrated);
             
-            // 2. 限制三相调制信号 (增大限制范围以避免饱和)
+            // 2. 限制三相调制信号
             float mod_A = _fsat(Modulation.Ma, 1.0f, -1.0f);
             float mod_B = _fsat(Modulation.Mb, 1.0f, -1.0f);
             float mod_C = _fsat(Modulation.Mc, 1.0f, -1.0f);
 
             // 3. 计算三相PWM占空比 (调制信号转换为占空比)
-            // 调制信号范围是[-1,1]，转换为[0,1]再乘以PWM周期
-            // 添加50%的直流偏置，使调制信号在PWM中心对称
-            duty_A_float = (0.5f + mod_A * 0.5f) * PWM_PERIOD_TIM8;
-            duty_B_float = (0.5f + mod_B * 0.5f) * PWM_PERIOD_TIM8;
-            duty_C_float = (0.5f + mod_C * 0.5f) * PWM_PERIOD_TIM8;
+            // 修正：αβ控制器输出的调制信号范围是[-1,1]，需要转换为[0,1]再乘以PWM周期
+            duty_A_float = ((mod_A + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
+            duty_B_float = ((mod_B + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
+            duty_C_float = ((mod_C + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
             break;
 
         case CONTROL_MODE_VOLTAGE:
@@ -546,30 +545,27 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
     // 计算第三相电流 (基于基尔霍夫定律: Ia + Ib + Ic = 0)
     float current_C = -(current_A + current_B);
 
-    // 步骤1: Clarke变换 - 将三相电流反馈转换到αβ坐标系 (修正系数)
-    // 标准Clarke变换: α = Ia, β = (1/√3)*(Ia + 2*Ib)
-    float F32alpha = current_A;
-    float F32beta = (current_A + 2.0f * current_B) * 0.57735026918963f;
+    // 步骤1: Clarke变换 - 将三相电流反馈转换到αβ坐标系
+    // α = (2/3)*Ia - (1/3)*Ib - (1/3)*Ic
+    float F32alpha = current_A * 0.6666666667f - current_B * 0.3333333334f - current_C * 0.3333333334f;
+    // β = (1/√3)*(Ib - Ic)
+    float F32beta = (current_B - current_C) * 0.57735026918963f;
 
-    // ============================================================================
-    // 【修正 #1】: 修正三相电流指令的生成逻辑 - 直接在αβ坐标系生成指令
-    // 避免三相到αβ再到三相的转换误差
-    // ============================================================================
-    // 步骤2: 直接在αβ坐标系生成电流指令 (基于锁相环的sin/cos值)
-    // α轴指令: Ia_CMD * cos(θ) (与A相同相位)
-    CurrConReg.Valpha_CMD = Ia_CMD * g_sogi_qsg.cos_theta;
-    // β轴指令: Ia_CMD * sin(θ) (滞后α轴90度)
-    CurrConReg.Vbeta_CMD = Ia_CMD * g_sogi_qsg.sin_theta;
-
-    // 为了显示目的，计算三相电流指令
+    // 步骤2: 生成三相电流指令 (基于锁相环的sin/cos值)
+    // A相: Ia_CMD * cos(θ)
     CurrConReg.Ia_CMD = Ia_CMD * g_sogi_qsg.cos_theta;
-    CurrConReg.Ib_CMD = Ia_CMD * (g_sogi_qsg.cos_theta * (-0.5f) + g_sogi_qsg.sin_theta * (-0.8660254f));
+    // B相: Ia_CMD * cos(θ - 120°) = Ia_CMD * (cosθ * (-0.5) + sinθ * (sqrt(3)/2))
+    CurrConReg.Ib_CMD = Ia_CMD * (g_sogi_qsg.cos_theta * (-0.5f) + g_sogi_qsg.sin_theta * (0.8660254f));
+    // C相: Ia_CMD * cos(θ + 120°) = Ia_CMD * (cosθ * (-0.5) - sinθ * (sqrt(3)/2))
     CurrConReg.Ic_CMD = Ia_CMD * (g_sogi_qsg.cos_theta * (-0.5f) - g_sogi_qsg.sin_theta * (0.8660254f));
+    
+    // 步骤3: Clarke变换 - 将三相电流指令转换到αβ坐标系
+    // Valpha_CMD = (2/3)*Ia_CMD - (1/3)*Ib_CMD - (1/3)*Ic_CMD
+    CurrConReg.Valpha_CMD = CurrConReg.Ia_CMD * 0.6666666667f - (CurrConReg.Ib_CMD + CurrConReg.Ic_CMD) * 0.3333333334f;
+    // Vbeta_CMD = (1/√3)*(Ib_CMD - Ic_CMD)
+    CurrConReg.Vbeta_CMD  = (CurrConReg.Ib_CMD - CurrConReg.Ic_CMD) * 0.57735026918963f;
 
-	// ============================================================================
-    // 【修正 #2】: 修正增量式PI控制器的实现
-    // 原始代码的PI控制器算法不是标准的增量式PI，无法正确累积误差
-    // ============================================================================
+
     // 步骤4: 计算α轴误差并更新PI控制器
     CurrConReg.Error_alpha = CurrConReg.Valpha_CMD - F32alpha;
     float delta_alpha = (PI_KP_CURRENT_ALPHA * (CurrConReg.Error_alpha - CurrConReg.Error_alpha_Pre)) + (PI_KI_CURRENT_ALPHA * CurrConReg.Error_alpha);
@@ -595,8 +591,7 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
     CurrConReg.feedforward_b = 0.0f;
     CurrConReg.feedforward_c = 0.0f;
 
-    // 步骤7: 反Clarke变换 - 将αβ坐标系输出转换回三相调制信号 (修正变换矩阵)
-    // 标准反Clarke变换:
+    // 步骤7: 反Clarke变换 - 将αβ坐标系输出转换回三相调制信号
     // Ma = V_alpha
     Modulation.Ma = CurrConReg.PI_Out_alpha + CurrConReg.feedforward_a;
     // Mb = -0.5 * V_alpha + (√3/2) * V_beta
@@ -608,12 +603,11 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
 #if (ALPHABETA_DEBUG_PRINTF == 1)
     static uint32_t debug_counter = 0;
     debug_counter++;
-    if (debug_counter >= 2000) {  // 每2000次输出一次，避免过于频繁 (约100ms一次)
+    if (debug_counter >= 1000) {  // 每1000次输出一次，避免过于频繁
         debug_counter = 0;
-        printf(">Iref:%.3f,Ia:%.3f,Ib:%.3f,Ialpha:%.3f,Ibeta:%.3f,Valpha_cmd:%.3f,Vbeta_cmd:%.3f,Valpha_out:%.3f,Vbeta_out:%.3f,Ma:%.3f,Mb:%.3f,Mc:%.3f\r\n",
-               Ia_CMD, current_A, current_B, F32alpha, F32beta,
+        printf(">Ia_ref:%.3f,Ialpha:%.3f,Ibeta:%.3f,Valpha:%.3f,Vbeta:%.3f,Ma:%.3f,Mb:%.3f,Mc:%.3f\r\n",
+               Ia_CMD, F32alpha, F32beta,
                CurrConReg.Valpha_CMD, CurrConReg.Vbeta_CMD,
-               CurrConReg.PI_Out_alpha, CurrConReg.PI_Out_Beta,
                Modulation.Ma, Modulation.Mb, Modulation.Mc);
     }
 #endif
