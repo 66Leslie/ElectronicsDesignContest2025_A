@@ -16,21 +16,16 @@
 // 三相PWM控制变量 (合并后只使用TIM8)
 // ============================================================================
 #define SINE_TABLE_SIZE 400   // 10kHz/25Hz = 400个采样点，三相SPWM生成
-#define PWM_PERIOD_TIM8 htim8.Init.Period     // TIM8的ARR (三相PWM)
+#define PWM_PERIOD_TIM8 8499     // TIM8的ARR (三相PWM)
 #define V_DC 30.0f            // 直流母线电压 30V
 // 修正的测量增益系数 - 基于硬件设计计算 (修正数值避免无穷大)
-#define V_MeasureGain (3.3f / 4096.0f)     // ADC转换增益: 3.3V / 4096 = 0.000805664f
-#define I_MeasureGain (3.3f / 4096.0f)     // ADC转换增益: 3.3V / 4096 = 0.000805664f
+#define MeasureGain 0.000805664f     // ADC转换增益: 3.3V / 4096 = 0.000805664f
 // 偏置测量相关定义 - 基于1.65V偏置
-#define TARGET_OFFSET_VOLTAGE 1.65f // 目标偏置电压 1.65V
-#define DEFAULT_VAC_OFFSET  (TARGET_OFFSET_VOLTAGE / 3.3f * 4096.0f) // 默认线电压偏置 ≈ 2048
-#define DEFAULT_IAC_OFFSET  (TARGET_OFFSET_VOLTAGE / 3.3f * 4096.0f) // 默认相电流偏置 ≈ 2048
+#define IacOffset_A     2048.0f    //adc_ac_buf[0] 48 56.17 8.17 2039.83
+#define VacOffset_AB    2048.0f   //adc_ac_buf[1]
+#define IacOffset_B     2048.0f    //adc_ac_buf[2]12.25 48 -12.25 35.75
+#define VacOffset_BC    2048.0f   //adc_ac_buf[3]
 
-// 动态偏置变量声明 (在初始化时测量) - 每个传感器独立偏置
-extern float VacOffset_AB;    // AB线电压偏置 - 动态测量
-extern float VacOffset_BC;    // BC线电压偏置 - 动态测量
-extern float IacOffset_A;     // A相电流偏置 - 动态测量
-extern float IacOffset_B;     // B相电流偏置 - 动态测量
 // ============================================================================
 // 控制模式枚举 - 支持三种控制模式
 // ============================================================================

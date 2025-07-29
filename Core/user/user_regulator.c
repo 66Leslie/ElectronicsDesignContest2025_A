@@ -9,13 +9,7 @@
 #include "adc.h"
 #include "tim.h"
 #include "sogi_pll.h"     // 引入SOGI结构体定义
-// ============================================================================
-// 新增：为电流和电压反馈信号创建SOGI滤波器
-// ============================================================================
-static SOGI_State sogi_filter_ia;  // A相电流的SOGI滤波器
-static SOGI_State sogi_filter_ib;  // B相电流的SOGI滤波器
-static SOGI_State sogi_filter_vab; // AB线电压的SOGI滤波器
-static SOGI_State sogi_filter_vbc; // BC线电压的SOGI滤波器
+
 
 // ============================================================================
 // 三相PWM控制变量 (合并单相和三相PWM控制)
@@ -53,24 +47,6 @@ Modulation_t Modulation;
 extern uint16_t adc_ac_buf[4];              // AC环路缓冲区 (在main.c中定义，DMA长度=2)
 extern uint16_t adc3_reference_buf[1];      // ADC3参考信号缓冲区 (在main.c中定义)
 
-// ============================================================================
-// 动态偏置变量定义 - 每个传感器独立偏置
-// ============================================================================
-float VacOffset_AB = DEFAULT_VAC_OFFSET;    // AB线电压偏置 (动态测量)
-float VacOffset_BC = DEFAULT_VAC_OFFSET;    // BC线电压偏置 (动态测量)
-float IacOffset_A = DEFAULT_IAC_OFFSET;     // A相电流偏置 (动态测量)
-float IacOffset_B = DEFAULT_IAC_OFFSET;     // B相电流偏置 (动态测量)
-
-// ============================================================================
-// 偏置测量相关变量
-// ============================================================================
-static uint16_t offset_sample_count = 0;    // 偏置测量采样计数器
-static uint32_t voltage_offset_sum_AB = 0;  // AB线电压偏置累加器
-static uint32_t voltage_offset_sum_BC = 0;  // BC线电压偏置累加器
-static uint32_t current_offset_sum_A = 0;   // A相电流偏置累加器
-static uint32_t current_offset_sum_B = 0;   // B相电流偏置累加器
-static uint8_t offset_measurement_complete = 0;  // 偏置测量完成标志
-// ============================================================================
 // 简化的同步相关变量（移除SOGI-PLL）
 // ============================================================================
 volatile float reference_frequency = 50.0f;  // 参考信号频率（固定值）
@@ -211,14 +187,10 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     // --- Part 2.1: ADC数据处理 - 分别计算用于控制和RMS的值 ---
 
     // 基础转换值（偏置补偿 + ADC转换增益）
-    float current_A_base = ((int16_t)adc_ac_buf[0] - IacOffset_A) * I_MeasureGain;
-    float voltage_AB_base = ((int16_t)adc_ac_buf[1] - VacOffset_AB) * V_MeasureGain;
-    float current_B_base = ((int16_t)adc_ac_buf[2] - IacOffset_B) * I_MeasureGain;
-    float voltage_BC_base = ((int16_t)adc_ac_buf[3] - VacOffset_BC) * V_MeasureGain;
-
-    // 使用限幅滤波器，目标值有1.65V偏置
-    // 1.65V对应的ADC数字量 = 1.65/3.3*4096 ≈ 2048
-    const float target_offset_adc = TARGET_OFFSET_VOLTAGE / 3.3f * 4096.0f;  // 对应的ADC值
+    float current_A_base = ((int16_t)adc_ac_buf[0] - IacOffset_A) * MeasureGain;
+    float voltage_AB_base = ((int16_t)adc_ac_buf[1] - VacOffset_AB) * MeasureGain;
+    float current_B_base = ((int16_t)adc_ac_buf[2] - IacOffset_B) * MeasureGain;
+    float voltage_BC_base = ((int16_t)adc_ac_buf[3] - VacOffset_BC) * MeasureGain;
 
     // 限幅滤波器：限制变化幅度，平滑信号
     static float current_A_last = 0.0f;
@@ -229,39 +201,21 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
 
     // 首次运行时初始化滤波器
     if (!filter_initialized) {
-        current_A_last = target_offset_adc * I_MeasureGain;
-        current_B_last = target_offset_adc * I_MeasureGain;
-        voltage_AB_last = target_offset_adc * V_MeasureGain;
-        voltage_BC_last = target_offset_adc * V_MeasureGain;
+        current_A_last = IacOffset_A * MeasureGain;
+        current_B_last = IacOffset_B * MeasureGain;
+        voltage_AB_last = VacOffset_AB * MeasureGain;
+        voltage_BC_last = VacOffset_BC * MeasureGain;
         filter_initialized = 1;
     }
 
-    const float MAX_CHANGE = 0.1f;  // 最大变化量限制（V）
+    const float MAX_CHANGE_voltage = 0.02f;  // 最大变化量限制（V）
+    const float MAX_CHANGE_current = 0.02f;//sino（0.45）× 2=0.01570780177742266781326489
 
-    // 应用限幅滤波器
-    float current_A_change = current_A_base - current_A_last;
-    if (current_A_change > MAX_CHANGE) current_A_change = MAX_CHANGE;
-    else if (current_A_change < -MAX_CHANGE) current_A_change = -MAX_CHANGE;
-    float current_A_filtered = current_A_last + current_A_change;
-    current_A_last = current_A_filtered;
-
-    float current_B_change = current_B_base - current_B_last;
-    if (current_B_change > MAX_CHANGE) current_B_change = MAX_CHANGE;
-    else if (current_B_change < -MAX_CHANGE) current_B_change = -MAX_CHANGE;
-    float current_B_filtered = current_B_last + current_B_change;
-    current_B_last = current_B_filtered;
-
-    float voltage_AB_change = voltage_AB_base - voltage_AB_last;
-    if (voltage_AB_change > MAX_CHANGE) voltage_AB_change = MAX_CHANGE;
-    else if (voltage_AB_change < -MAX_CHANGE) voltage_AB_change = -MAX_CHANGE;
-    float voltage_AB_filtered = voltage_AB_last + voltage_AB_change;
-    voltage_AB_last = voltage_AB_filtered;
-
-    float voltage_BC_change = voltage_BC_base - voltage_BC_last;
-    if (voltage_BC_change > MAX_CHANGE) voltage_BC_change = MAX_CHANGE;
-    else if (voltage_BC_change < -MAX_CHANGE) voltage_BC_change = -MAX_CHANGE;
-    float voltage_BC_filtered = voltage_BC_last + voltage_BC_change;
-    voltage_BC_last = voltage_BC_filtered;
+    // 应用限幅滤波器 - 使用data_process.c中的Limit_Filter函数
+    float current_A_filtered = Limit_Filter(current_A_base, &current_A_last, MAX_CHANGE_current);
+    float current_B_filtered = Limit_Filter(current_B_base, &current_B_last, MAX_CHANGE_current);
+    float voltage_AB_filtered = Limit_Filter(voltage_AB_base, &voltage_AB_last, MAX_CHANGE_voltage);
+    float voltage_BC_filtered = Limit_Filter(voltage_BC_base, &voltage_BC_last, MAX_CHANGE_voltage);
 
     // 累加基础值的平方（用于RMS计算）- 添加数值保护
     // 限制基础值范围，避免平方后溢出
@@ -761,10 +715,10 @@ void Display_Manual_Mode_Page(void)
 
     // 正常显示模式 (偏置测量已在初始化完成)
     OLED_Println(OLED_6X8, "Mod: %.1f%%,PWM:%s", modulation_ratio * 100.0f, pwm_enabled ? "ON" : "OFF");
-    OLED_Println(OLED_6X8, "V_AB: %.2fV", ac_voltage_rms_AB);
-    OLED_Println(OLED_6X8, "I_A: %.2fA", ac_current_rms_A);
-    OLED_Println(OLED_6X8, "V_BC: %.2fV", ac_voltage_rms_BC);
-    OLED_Println(OLED_6X8, "I_B: %.2fA", ac_current_rms_B);
+    OLED_Println(OLED_6X8, "V_AB: %.3fV", ac_voltage_rms_AB);
+    OLED_Println(OLED_6X8, "I_A: %.3fA", ac_current_rms_A);
+    OLED_Println(OLED_6X8, "V_BC: %.3fV", ac_voltage_rms_BC);
+    OLED_Println(OLED_6X8, "I_B: %.3fA", ac_current_rms_B);
     OLED_Println(OLED_6X8, "Ref: %s", Get_Reference_Signal_Name(current_reference_signal));
     OLED_Println(OLED_6X8, "12+- 3PWM 4Ref 5Page");
 }
@@ -1030,24 +984,6 @@ const char* Get_State_Name(System_State_t state)
         case STATE_FAULT:       return "FAULT";
         default:                return "UNKNOWN";
     }
-}
-void Reset_Offset_Measurement(void)
-{
-    // 重置所有偏置测量相关变量
-    offset_sample_count = 0;
-    voltage_offset_sum_AB = 0;
-    voltage_offset_sum_BC = 0;
-    current_offset_sum_A = 0;
-    current_offset_sum_B = 0;
-    offset_measurement_complete = 0;
-
-    // 重置所有偏置值为默认值
-    VacOffset_AB = DEFAULT_VAC_OFFSET;
-    VacOffset_BC = DEFAULT_VAC_OFFSET;
-    IacOffset_A = DEFAULT_IAC_OFFSET;
-    IacOffset_B = DEFAULT_IAC_OFFSET;
-
-    user_regulator_info("Offset measurement reset - starting new measurement");
 }
 // ============================================================================
 // DC系数保存
