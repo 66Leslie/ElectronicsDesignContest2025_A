@@ -109,6 +109,9 @@ void user_regulator_init(void)
     HAL_ADC_Start_DMA(&hadc2, (uint32_t*)&adc_ac_buf[2], 2);   //
     HAL_ADC_Start_DMA(&hadc3, (uint32_t*)adc3_reference_buf, 1);  //
 
+    //HAL_DAC_Start(&hdac2, DAC_CHANNEL_1);       // 启动DAC2通道1 (PA6)
+    //HAL_DAC_SetValue(&hdac2, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_value);
+
     OLED_Init();
     OLED_Clear();
     OLED_ShowString(0, 0, "Init", OLED_8X16);
