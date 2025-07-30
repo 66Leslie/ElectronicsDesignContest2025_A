@@ -74,22 +74,13 @@ uint8_t key_read_raw(key_num_t key)
 }
 
 /**
- * @brief 检测组合按键 (KEY4 + KEY5)
- * @return: 组合按键状态位 (bit4=KEY4, bit5=KEY5)
+ * @brief 检测组合按键 (已移除KEY4，保留函数接口兼容性)
+ * @return: 组合按键状态位
  */
 uint8_t key_check_combo(void)
 {
-    uint8_t combo_keys = 0;
-
-    // 检查KEY4和KEY5是否同时按下
-    if (key_read_raw(KEY4)) {
-        combo_keys |= (1 << 4);  // 设置bit4
-    }
-    if (key_read_raw(KEY5)) {
-        combo_keys |= (1 << 5);  // 设置bit5
-    }
-
-    return combo_keys;
+    // KEY4已移除，不再支持组合按键
+    return 0;
 }
 
 /**
@@ -100,28 +91,6 @@ key_result_t key_scan(void)
 {
     key_result_t result = {KEY1, KEY_NONE, 0};  // 默认返回无按键
     uint32_t current_time = HAL_GetTick();
-
-    // 首先检测组合按键 (KEY4 + KEY5)
-    uint8_t combo_keys = key_check_combo();
-    if ((combo_keys & 0x30) == 0x30) {  // KEY4和KEY5都按下 (bit4和bit5都为1)
-        if (!combo_state.combo_detected) {
-            combo_state.combo_detected = 1;
-            combo_state.combo_start_time = current_time;
-            combo_state.combo_processed = 0;
-        }
-
-        // 防抖处理
-        if (!combo_state.combo_processed &&
-            (current_time - combo_state.combo_start_time) >= KEY_DEBOUNCE_TIME) {
-            combo_state.combo_processed = 1;
-            result.key_state = KEY_COMBO_PRESS;
-            result.combo_keys = combo_keys;
-            return result;
-        }
-    } else {
-        combo_state.combo_detected = 0;
-        combo_state.combo_processed = 0;
-    }
 
     // 扫描单个按键
     for (int i = 0; i < KEY_NUM; i++) {

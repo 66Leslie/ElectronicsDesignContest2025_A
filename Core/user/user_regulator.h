@@ -151,10 +151,10 @@ void Update_Disp(void);
 // 显示页面函数声明
 // ============================================================================
 // 控制模式显示函数声明 (针对128×64 OLED优化 - 三相逆变器)
-void Display_VFD_Mode_Page(void);    // 变频测试显示（开环）
-void Display_Manual_Mode_Page(void);  // 手动模式显示（开环）
+void Display_Manual_Mode_Page(void);  // 手动模式显示（开环调制比）
 void Display_CV_Mode_Page(void);      // 恒压模式显示（三相）
 void Display_CC_Mode_Page(void);      // 恒流模式显示（三相）
+void Display_Freq_Mode_Page(void);    // 频率调节页面显示（开环频率调节）
 
 // ============================================================================
 // PI控制器函数声明
@@ -192,8 +192,10 @@ void Init_Advanced_Filters(void);
 // 显示页面枚举
 // ============================================================================
 typedef enum {
-    PAGE_MAIN = 0,      // 主页面：基本信息
-    PAGE_CONTROL,       // 控制页面：控制参数
+    PAGE_MANUAL = 0,    // 手动模式页面：开环调制比控制
+    PAGE_CV,            // 恒压模式页面：CV控制
+    PAGE_CC,            // 恒流模式页面：CC控制
+    PAGE_FREQ,          // 频率调节页面：开环频率调节
     PAGE_COUNT          // 页面总数
 } Display_Page_t;
 
@@ -214,14 +216,6 @@ typedef enum {
     REF_SIGNAL_INTERNAL,        // 内部参考信号 (软件生成)
     REF_SIGNAL_COUNT            // 信号源总数
 } Reference_Signal_t;
-
-// ============================================================================
-// 简化的接口函数声明（移除PLL）
-// ============================================================================
-float Get_Reference_Frequency(void);
-float Get_Reference_Amplitude(void);
-uint8_t Is_PLL_Locked(void);
-void Set_Sync_Mode(uint8_t mode);
 
 // ============================================================================
 // 参考信号选择函数声明

@@ -16,7 +16,7 @@ typedef enum {
     KEY1 = 0,    // PE3  - 参数增加 (+)
     KEY2,        // PB9  - 参数减少 (-)
     KEY3,        // PF10 - PWM开启/关闭
-    KEY4,        // PE1  - 参考信号切换(外部/内部)
+    KEY4,        // PE1  - 暂时没有用处
     KEY5,        // PE5  - 模式切换(开环/CV/CC)
     KEY_BOOT     // PB8  - BOOT按键(特殊处理)
 } key_num_t;

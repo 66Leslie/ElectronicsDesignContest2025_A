@@ -18,8 +18,7 @@ volatile float modulation_ratio = 0.5f;     // 调制比 (0.0 - 1.0)
 volatile uint8_t pwm_enabled = 0;           // PWM使能标志 (统一控制三相PWM)
 
 // 全局启动命令变量 (供按键控制)
-static uint16_t Start_CMD = 1;    // 启动命令 (1=停止, 0=启动) - 初始为停止状态，等待按键启动
-volatile float variable_freq;//(0-255)
+uint16_t variable_freq;
 // ============================================================================
 // 双环控制系统变量
 // ============================================================================
@@ -52,9 +51,9 @@ volatile float reference_frequency = 50.0f;  // 参考信号频率（固定值�
 volatile float reference_amplitude = 0.0f;   // 参考信号幅值
 volatile Sync_Mode_t sync_mode = SYNC_MODE_FREE; // 同步模式（固定为自由运行）
 // ============================================================================
-// 参考信号选择相关变量
+// 参考信号选择相关变量（固定为内部信号）
 // ============================================================================
-volatile Reference_Signal_t current_reference_signal = REF_SIGNAL_EXTERNAL;  // 当前参考信号选择
+volatile Reference_Signal_t current_reference_signal = REF_SIGNAL_INTERNAL;  // 固定使用内部参考信号
 
 // ============================================================================
 // 状态机相关变量
@@ -72,7 +71,7 @@ SOGICompositeFilter_t sogi_filter;  // SOGI复合滤波器实例
 // ============================================================================
 // 显示相关变量
 // ============================================================================
-volatile Display_Page_t current_page = PAGE_MAIN;  // 当前显示页面
+volatile Display_Page_t current_page = PAGE_MANUAL;  // 当前显示页面
 volatile uint32_t page_update_timer = 0;           // 页面更新定时器
 
 // ============================================================================
@@ -115,7 +114,7 @@ void user_regulator_init(void)
     OLED_Clear();
     OLED_ShowString(0, 0, "Init", OLED_8X16);
     OLED_Update();
-    variable_freq = 0;
+    variable_freq = 50.0f;  // 初始化为50Hz
 
     key_init();
 
@@ -166,14 +165,15 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     if(hadc->Instance == ADC1) { adc_completion_mask |= (1 << 0); }
     if(hadc->Instance == ADC2) { adc_completion_mask |= (1 << 1); }
     if(hadc->Instance == ADC3) {//全部使用内部信号
-        //20khz 100020hz
-        //20khz 400  50hz
-        //20khz 200  100hz
-        uint16_t ref_raw = adc3_reference_buf[0];
             // 内部信号模式：直接数学计算
             static uint32_t internal_counter = 0;
-            internal_counter = (internal_counter + 1) % (20000/(uint32_t)variable_freq);
-            float current_angle = 2.0f * M_PI * internal_counter / (20000/(uint32_t)variable_freq);
+
+            // 确保频率在合理范围内，避免除零错误
+            variable_freq  = _fsat(variable_freq, 100.0f, 1.0f);
+
+            uint32_t period_samples = (uint32_t)(20000.0f / variable_freq);
+            internal_counter = (internal_counter + 1) % period_samples;
+            float current_angle = 2.0f * M_PI * internal_counter / (float)period_samples;
             g_sogi_qsg.sin_theta = sinf(current_angle);
             g_sogi_qsg.cos_theta = cosf(current_angle);
             g_sogi_qsg.is_locked = 1;  // 内部信号始终锁定
@@ -323,7 +323,6 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
             {
                 float final_modulation_ratio = (control_mode == CONTROL_MODE_VOLTAGE) ? pi_modulation_output : modulation_ratio;
                 final_modulation_ratio = _fsat(final_modulation_ratio, 1.0f, 0.0f);
-                final_modulation_ratio = 1;
                 // 获取相位信息
                 float cos_theta = g_sogi_qsg.cos_theta;
                 float sin_theta = g_sogi_qsg.sin_theta;
@@ -491,77 +490,58 @@ void key_proc(void)
     if (key_result.key_state == KEY_PRESS){
         switch (key_result.key_num) {
             case KEY1:  // 参数增加 (+)
-                variable_freq += 1;
-                break;
-            case KEY2:  // 参数减少 (-)
-                variable_freq -= 1;
-                break;
-            case KEY3:  // PWM开启/关闭
-                // 切换PWM使能状态
-                // 切换PWM使能状态
-                pwm_enabled = !pwm_enabled;
-
-                if (pwm_enabled) {
-                    // 启用PWM输出
-                    PWM_Enable();
-                } else {
-                    // 停止PWM输出
-                    PWM_Disable();
-                }
-
-                user_regulator_info("PWM %s", pwm_enabled ? "ENABLED" : "DISABLED");
-                break;
-            default:break;
-        }
-    }
-    // 只处理按键按下事件
-    /*if (key_result.key_state == KEY_PRESS) {
-        switch (key_result.key_num) {
-            case KEY1:  // 参数增加 (+)
-                switch (control_mode) {
-                    case CONTROL_MODE_MANUAL:
+                switch (current_page) {
+                    case PAGE_MANUAL:
                         // 手动模式：增加调制比
                         if (modulation_ratio < 0.95f) {
                             modulation_ratio += 0.05f;
                             if (modulation_ratio > 0.95f) modulation_ratio = 0.95f;
                         }
                         break;
-
-                    case CONTROL_MODE_VOLTAGE:
+                    case PAGE_CV:
                         // CV模式：增加电压参考值
                         Set_Voltage_Reference(voltage_reference + 1.0f);
                         break;
-
-                    case CONTROL_MODE_CURRENT:
+                    case PAGE_CC:
                         // CC模式：增加电流参考值
                         Set_Current_Reference(current_reference + 0.1f);
                         break;
-
+                    case PAGE_FREQ:
+                        // 频率调节页面：增加频率
+                        if (variable_freq < 100.0f) {
+                            variable_freq += 1.0f;
+                            if (variable_freq > 100.0f) variable_freq = 100.0f;
+                        }
+                        break;
                     default:
                         break;
                 }
                 break;
 
             case KEY2:  // 参数减少 (-)
-                switch (control_mode) {
-                    case CONTROL_MODE_MANUAL:
+                switch (current_page) {
+                    case PAGE_MANUAL:
                         // 手动模式：减少调制比
                         if (modulation_ratio > 0.0f) {
                             modulation_ratio -= 0.05f;
                             if (modulation_ratio < 0.0f) modulation_ratio = 0.0f;
                         }
                         break;
-
-                    case CONTROL_MODE_VOLTAGE:
+                    case PAGE_CV:
                         // CV模式：减少电压参考值
                         Set_Voltage_Reference(voltage_reference - 1.0f);
                         break;
-
-                    case CONTROL_MODE_CURRENT:
+                    case PAGE_CC:
                         // CC模式：减少电流参考值
                         Set_Current_Reference(current_reference - 0.1f);
                         break;
-
+                    case PAGE_FREQ:
+                        // 频率调节页面：减少频率
+                        if (variable_freq > 10.0f) {
+                            variable_freq -= 1.0f;
+                            if (variable_freq < 10.0f) variable_freq = 10.0f;
+                        }
+                        break;
                     default:
                         break;
                 }
@@ -573,43 +553,46 @@ void key_proc(void)
 
                 if (pwm_enabled) {
                     // 启用PWM输出
-                    Start_CMD = 0;
                     PWM_Enable();
                 } else {
                     // 停止PWM输出
-                    Start_CMD = 1;
                     PWM_Disable();
                 }
 
                 user_regulator_info("PWM %s", pwm_enabled ? "ENABLED" : "DISABLED");
                 break;
 
-            case KEY4:  // 参考信号选择
-                // 切换参考信号选择
-                if (current_reference_signal == REF_SIGNAL_EXTERNAL) {
-                    Set_Reference_Signal(REF_SIGNAL_INTERNAL);
-                } else {
-                    Set_Reference_Signal(REF_SIGNAL_EXTERNAL);
-                }
-                user_regulator_info("Reference Signal: %s", Get_Reference_Signal_Name(current_reference_signal));
-                break;
-
             case KEY5:  // 页面切换
-                // 循环切换控制模式：Manual -> CV -> CC -> Manual
-                if (control_mode == CONTROL_MODE_MANUAL) {
-                    Set_Control_Mode(CONTROL_MODE_VOLTAGE);  // 开环 -> CV
-                } else if (control_mode == CONTROL_MODE_VOLTAGE) {
-                    Set_Control_Mode(CONTROL_MODE_CURRENT);  // CV -> CC
-                } else {
-                    Set_Control_Mode(CONTROL_MODE_MANUAL);   // CC -> 开环
+                // 循环切换页面：Manual -> CV -> CC -> Freq -> Manual
+                switch (current_page) {
+                    case PAGE_MANUAL:
+                        current_page = PAGE_CV;
+                        Set_Control_Mode(CONTROL_MODE_VOLTAGE);
+                        break;
+                    case PAGE_CV:
+                        current_page = PAGE_CC;
+                        Set_Control_Mode(CONTROL_MODE_CURRENT);
+                        break;
+                    case PAGE_CC:
+                        current_page = PAGE_FREQ;
+                        Set_Control_Mode(CONTROL_MODE_MANUAL);  // 频率调节页面使用开环模式
+                        break;
+                    case PAGE_FREQ:
+                        current_page = PAGE_MANUAL;
+                        Set_Control_Mode(CONTROL_MODE_MANUAL);
+                        break;
+                    default:
+                        current_page = PAGE_MANUAL;
+                        Set_Control_Mode(CONTROL_MODE_MANUAL);
+                        break;
                 }
-                user_regulator_info("Mode: %s", Get_Control_Mode_Name(control_mode));
+                user_regulator_info("Page: %d, Mode: %s", current_page, Get_Control_Mode_Name(control_mode));
                 break;
 
             default:
                 break;
         }
-    }*/
+    }
 }
 // ============================================================================
 // 更新OLED显示 - 多页面支持128*64
@@ -624,52 +607,63 @@ void Update_Disp(void)
         last_update = current_time;
 
         OLED_Clear();
-        Display_VFD_Mode_Page();
-        // // 根据当前控制模式显示对应界面
-        // switch (control_mode) {
-        //     case CONTROL_MODE_MANUAL:
-        //         Display_Manual_Mode_Page();
-        //         break;
-        //     case CONTROL_MODE_VOLTAGE:
-        //         Display_CV_Mode_Page();
-        //         break;
-        //     case CONTROL_MODE_CURRENT:
-        //         Display_CC_Mode_Page();
-        //         break;
-        //     default:
-        //         // 异常情况，强制回到手动模式
-        //         Set_Control_Mode(CONTROL_MODE_MANUAL);
-        //         Display_Manual_Mode_Page();
-        //         break;
-        // }
+
+        // 根据当前页面显示对应界面
+        switch (current_page) {
+            case PAGE_MANUAL:
+                Display_Manual_Mode_Page();
+                break;
+            case PAGE_CV:
+                Display_CV_Mode_Page();
+                break;
+            case PAGE_CC:
+                Display_CC_Mode_Page();
+                break;
+            case PAGE_FREQ:
+                Display_Freq_Mode_Page();
+                break;
+            default:
+                // 异常情况，强制回到手动模式
+                current_page = PAGE_MANUAL;
+                Set_Control_Mode(CONTROL_MODE_MANUAL);
+                Display_Manual_Mode_Page();
+                break;
+        }
 
         OLED_Update();
     }
 }
 /**
- * @brief 变频测试 6*8最多显示8行
+ * @brief 频率调节页面显示 - 开环频率调节模式
  */
-void Display_VFD_Mode_Page(void)
+void Display_Freq_Mode_Page(void)
 {
+    // 使用统一的小字体，避免混用字体导致的行号计算问题
     OLED_SetLine(0);
-    OLED_Println(OLED_8X16,"F:%.1fHz",(float)variable_freq);
+
+    // 频率调节页面显示
+    OLED_Println(OLED_6X8, "FREQ PWM:%s", pwm_enabled ? "ON" : "OFF");
+    OLED_Println(OLED_6X8, "Freq:%.1fHz", variable_freq);
+    OLED_Println(OLED_6X8, "Mod:%.1f%% (Open Loop)", modulation_ratio * 100.0f);
+    OLED_Println(OLED_6X8, "V_AB:%.2fV V_BC:%.2fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
+    OLED_Println(OLED_6X8, "I_A:%.2fA I_B:%.2fA", ac_current_rms_A, ac_current_rms_B);
+    OLED_Println(OLED_6X8, "K1:+ K2:- K3:PWM K5:Page");
 }
 /**
- * @brief 手动模式显示界面 - 开环模式 6*8最多显示8行
+ * @brief 手动模式显示界面 - 开环调制比控制
  */
 void Display_Manual_Mode_Page(void)
 {
     // 使用统一的小字体，避免混用字体导致的行号计算问题
     OLED_SetLine(0);
 
-    // 正常显示模式 (偏置测量已在初始化完成)
-    OLED_Println(OLED_6X8, "Mod: %.1f%%,PWM:%s", modulation_ratio * 100.0f, pwm_enabled ? "ON" : "OFF");
-    OLED_Println(OLED_6X8, "V_AB: %.3fV", ac_voltage_rms_AB);
-    OLED_Println(OLED_6X8, "I_A: %.3fA", ac_current_rms_A);
-    OLED_Println(OLED_6X8, "V_BC: %.3fV", ac_voltage_rms_BC);
-    OLED_Println(OLED_6X8, "I_B: %.3fA", ac_current_rms_B);
-    OLED_Println(OLED_6X8, "Ref: %s", Get_Reference_Signal_Name(current_reference_signal));
-    OLED_Println(OLED_6X8, "12+- 3PWM 4Ref 5Page");
+    // 手动模式显示
+    OLED_Println(OLED_6X8, "MANUAL PWM:%s", pwm_enabled ? "ON" : "OFF");
+    OLED_Println(OLED_6X8, "Mod:%.1f%% (Manual)", modulation_ratio * 100.0f);
+    OLED_Println(OLED_6X8, "V_AB:%.2fV V_BC:%.2fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
+    OLED_Println(OLED_6X8, "I_A:%.2fA I_B:%.2fA", ac_current_rms_A, ac_current_rms_B);
+    OLED_Println(OLED_6X8, "Freq:%.1fHz", variable_freq);
+    OLED_Println(OLED_6X8, "1/2:+- 3:PWM 5:Page");
 }
 /**
  * @brief 恒压模式(CV)显示界面 - 三相逆变器
@@ -680,12 +674,13 @@ void Display_CV_Mode_Page(void)
     OLED_SetLine(0);
 
     // 统一使用小字体，可以显示更多信息
-    OLED_Println(OLED_6X8, "CV Mode PWM:%s", pwm_enabled ? "ON" : "OFF");
+    OLED_Println(OLED_6X8, "CV PWM:%s", pwm_enabled ? "ON" : "OFF");
     OLED_Println(OLED_6X8, "Set:%.1fV Act:%.2fV", voltage_reference, ac_voltage_rms_AB);
-    OLED_Println(OLED_6X8, "Mod:%.1f%% Ref:%s", pi_modulation_output * 100.0f, Get_Reference_Signal_Name(current_reference_signal));
-    OLED_Println(OLED_6X8, "I_A: %.2fA I_B: %.2fA", ac_current_rms_A, ac_current_rms_B);
+    OLED_Println(OLED_6X8, "Mod:%.1f%% (Auto)", pi_modulation_output * 100.0f);
+    OLED_Println(OLED_6X8, "I_A:%.2fA I_B:%.2fA", ac_current_rms_A, ac_current_rms_B);
     OLED_Println(OLED_6X8, "AB:%.2fV BC:%.2fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
-    OLED_Println(OLED_6X8, "12+- 3pwm 4Ref 5Page");
+    OLED_Println(OLED_6X8, "Freq:%.1fHz (Fixed)", variable_freq);
+    OLED_Println(OLED_6X8, "1/2:+- 3:PWM 5:Page");
 }
 /**
  * @brief 恒流模式(CC)显示界面 - 三相逆变器
@@ -698,10 +693,11 @@ void Display_CC_Mode_Page(void)
     // 统一使用小字体，可以显示更多信息
     OLED_Println(OLED_6X8, "CC Mode PWM:%s", pwm_enabled ? "ON" : "OFF");
     OLED_Println(OLED_6X8, "Set:%.2fA Act:%.2fA", current_reference, ac_current_rms_A);
-    OLED_Println(OLED_6X8, "Mod:%.1f%% Ref:%s", pi_modulation_output * 100.0f, Get_Reference_Signal_Name(current_reference_signal));
+    OLED_Println(OLED_6X8, "Mod:%.1f%% (Auto)", pi_modulation_output * 100.0f);
     OLED_Println(OLED_6X8, "A:%.2fA B:%.2fA", ac_current_rms_A, ac_current_rms_B);
     OLED_Println(OLED_6X8, "AB:%.1fV BC:%.1fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
-    OLED_Println(OLED_6X8, "K1:+ K2:- K4:Ref K5:Page");
+    OLED_Println(OLED_6X8, "Freq: %.1fHz (Fixed)", variable_freq);
+    OLED_Println(OLED_6X8, "K1:+ K2:- K3:PWM K5:Page");
 }
 // ============================================================================
 // αβ坐标系电流控制器复位函数
@@ -901,11 +897,9 @@ void Set_Current_Reference(float current_ref)
 }
 void Set_Reference_Signal(Reference_Signal_t signal_type)
 {
-    if (signal_type >= REF_SIGNAL_COUNT) return;
-
-    current_reference_signal = signal_type;
-
-    user_regulator_info("Reference Signal set to: %s", Get_Reference_Signal_Name(signal_type));
+    // 固定使用内部信号，不允许切换
+    current_reference_signal = REF_SIGNAL_INTERNAL;
+    user_regulator_info("Reference Signal: Internal (Fixed)");
 }
 const char* Get_Reference_Signal_Name(Reference_Signal_t signal_type)
 {
