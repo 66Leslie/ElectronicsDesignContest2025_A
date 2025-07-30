@@ -586,6 +586,8 @@ float SOGICompositeFilter_Update(SOGICompositeFilter_t *filter, float new_value)
     // 第二步：SOGI滤波，提取50Hz基波分量
     float step2 = SOGIFilter_Update(&filter->sogi_filter, step1);
 
+    //
+
     return step2;
 }
 

@@ -67,7 +67,10 @@ volatile uint32_t state_transition_timer = 0;               // 状态转换定�
 // 高效锁相模块实例定义
 // ============================================================================
 SogiQsg_t g_sogi_qsg;  // 全局SOGI-QSG实例，基于老师的高效锁相算法
-SOGICompositeFilter_t sogi_filter;  // SOGI复合滤波器实例
+SOGICompositeFilter_t sogi_filter_ia;  // A相电流SOGI复合滤波器实例
+SOGICompositeFilter_t sogi_filter_ib;  // B相电流SOGI复合滤波器实例
+SOGICompositeFilter_t sogi_filter_vab; // AB线电压SOGI复合滤波器实例
+SOGICompositeFilter_t sogi_filter_vbc; // BC线电压SOGI复合滤波器实例
 
 // ============================================================================
 // 显示相关变量
@@ -133,12 +136,18 @@ void user_regulator_init(void)
     Dual_Loop_Control_Init();
     // 初始化状态机,进入等待状态
     // 初始化SOGI复合滤波器
-    SOGICompositeFilter_Init(&sogi_filter, 
-                            SOGI_TARGET_FREQ,      // 50Hz
-                            SOGI_SAMPLING_FREQ,    // 20kHz
-                            SOGI_DAMPING_FACTOR,   // 1.414
-                            0.026f,                  // 限幅变化量
-                            0.00f);                // 初始值（偏置）
+    SOGICompositeFilter_Init(&sogi_filter_ia, 
+                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ, 
+                            SOGI_DAMPING_FACTOR, 0.026f, 0.0f);
+    SOGICompositeFilter_Init(&sogi_filter_ib, 
+                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ, 
+                            SOGI_DAMPING_FACTOR, 0.026f, 0.0f);
+    SOGICompositeFilter_Init(&sogi_filter_vab, 
+                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ, 
+                            SOGI_DAMPING_FACTOR, 0.026f, 0.0f);
+    SOGICompositeFilter_Init(&sogi_filter_vbc, 
+                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ, 
+                            SOGI_DAMPING_FACTOR, 0.026f, 0.0f);
     // 初始化参考信号选择
     current_reference_signal = REF_SIGNAL_INTERNAL;  // 默认使用内部参考信号
 }
@@ -195,33 +204,33 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     float current_B_base = ((int16_t)adc_ac_buf[2] - IacOffset_B) * MeasureGain;
     float voltage_BC_base = ((int16_t)adc_ac_buf[3] - VacOffset_BC) * MeasureGain;
 
-    // 限幅滤波器：限制变化幅度，平滑信号
-    static float current_A_last = 0.0f;
-    static float current_B_last = 0.0f;
-    static float voltage_AB_last = 0.0f;
-    static float voltage_BC_last = 0.0f;
-    static uint8_t filter_initialized = 0;
+    // // 限幅滤波器：限制变化幅度，平滑信号
+    // static float current_A_last = 0.0f;
+    // static float current_B_last = 0.0f;
+    // static float voltage_AB_last = 0.0f;
+    // static float voltage_BC_last = 0.0f;
+    // static uint8_t filter_initialized = 0;
 
-    // 首次运行时初始化滤波器
-    if (!filter_initialized) {
-        current_A_last = IacOffset_A * MeasureGain;
-        current_B_last = IacOffset_B * MeasureGain;
-        voltage_AB_last = VacOffset_AB * MeasureGain;
-        voltage_BC_last = VacOffset_BC * MeasureGain;
-        filter_initialized = 1;
-    }
+    // // 首次运行时初始化滤波器
+    // if (!filter_initialized) {
+    //     current_A_last = IacOffset_A * MeasureGain;
+    //     current_B_last = IacOffset_B * MeasureGain;
+    //     voltage_AB_last = VacOffset_AB * MeasureGain;
+    //     voltage_BC_last = VacOffset_BC * MeasureGain;
+    //     filter_initialized = 1;
+    // }
 
-    // 应用限幅滤波器 - 使用data_process.c中的Limit_Filter函数
-    const float MAX_CHANGE = 0.026f;//sin(0.45)/3.3=0.02591
-    float current_A_filtered = Limit_Filter(current_A_base, &current_A_last, MAX_CHANGE);
-    float current_B_filtered = Limit_Filter(current_B_base, &current_B_last, MAX_CHANGE);
-    float voltage_AB_filtered = Limit_Filter(voltage_AB_base, &voltage_AB_last, MAX_CHANGE);
-    float voltage_BC_filtered = Limit_Filter(voltage_BC_base, &voltage_BC_last, MAX_CHANGE);
-    // 使用SOGI复合滤波器
-    //float current_A_filtered = SOGICompositeFilter_Update(&sogi_filter, current_A_base);
-    // float current_B_filtered = SOGICompositeFilter_Update(&sogi_filter, current_B_base);
-    // float voltage_AB_filtered = SOGICompositeFilter_Update(&sogi_filter, voltage_AB_base);
-    // float voltage_BC_filtered = SOGICompositeFilter_Update(&sogi_filter, voltage_BC_base);
+    // // 应用限幅滤波器 - 使用data_process.c中的Limit_Filter函数
+    // const float MAX_CHANGE = 0.026f;//sin(0.45)/3.3=0.02591
+    // float current_A_filtered = Limit_Filter(current_A_base, &current_A_last, MAX_CHANGE);
+    // float current_B_filtered = Limit_Filter(current_B_base, &current_B_last, MAX_CHANGE);
+    // float voltage_AB_filtered = Limit_Filter(voltage_AB_base, &voltage_AB_last, MAX_CHANGE);
+    // float voltage_BC_filtered = Limit_Filter(voltage_BC_base, &voltage_BC_last, MAX_CHANGE);
+    //使用SOGI复合滤波器
+    float current_A_filtered = SOGICompositeFilter_Update(&sogi_filter_ia, current_A_base);
+    float current_B_filtered = SOGICompositeFilter_Update(&sogi_filter_ib, current_B_base);
+    float voltage_AB_filtered = SOGICompositeFilter_Update(&sogi_filter_vab, voltage_AB_base);
+    float voltage_BC_filtered = SOGICompositeFilter_Update(&sogi_filter_vbc, voltage_BC_base);
 
     // 累加基础值的平方（用于RMS计算）- 添加数值保护
     // 限制基础值范围，避免平方后溢出
@@ -249,10 +258,15 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         float voltage_BC_avg = fmaxf(voltage_BC_sum / (float)AC_SAMPLE_SIZE, 0.0f);
 
         ac_current_rms_A = sqrtf(current_A_avg) * 5.1778f - 0.0111f ;
-        ac_voltage_rms_AB = sqrtf(voltage_AB_avg) * 68.011f - 0.1784f + 0.2f ;//手动矫正0.1
+        ac_voltage_rms_AB = sqrtf(voltage_AB_avg) * 68.011f - 0.1784f;//手动矫正0.1
         ac_current_rms_B = sqrtf(current_B_avg) * 5.1778f - 0.0111f;
-        ac_voltage_rms_BC = sqrtf(voltage_BC_avg) * 68.011f - 0.1784f + 0.1f;
-
+        ac_voltage_rms_BC = sqrtf(voltage_BC_avg) * 68.011f - 0.1784f;
+        // 真实值 = m * 显示值 + c 低参考值 高参考值 (V_oled1, V_real1) 和 (V_oled2, V_real2)
+        //ac_voltage_rms_AB 
+        // 应用你通过两点校准计算出的新系数 m 和 c
+        const float cal_m = 0.993f; // 示例值：新的斜率
+        const float cal_c = 0.185f; // 示例值：新的截距
+        ac_voltage_rms_AB = ac_voltage_rms_AB * cal_m + cal_c;
         // 最终结果限制，避免异常值
         ac_current_rms_A = _fsat(ac_current_rms_A, 100.0f, 0.0f);
         ac_voltage_rms_AB = _fsat(ac_voltage_rms_AB, 1000.0f, 0.0f);

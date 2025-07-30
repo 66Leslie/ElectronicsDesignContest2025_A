@@ -16,7 +16,7 @@
 // 三相PWM控制变量 (合并后只使用TIM8)
 // ============================================================================
 #define SINE_TABLE_SIZE 400   // 10kHz/25Hz = 400个采样点，三相SPWM生成
-#define PWM_PERIOD_TIM8 8499     // TIM8的ARR (三相PWM)
+#define PWM_PERIOD_TIM8 8500     // TIM8的ARR (三相PWM)
 #define V_DC_NOMINAL 30.0f       // 标称直流母线电压 30V (用于归一化基准)
 #define V_DC_MIN 25.0f           // 最小直流母线电压
 #define V_DC_MAX 65.0f           // 最大直流母线电压
@@ -56,7 +56,6 @@ typedef enum {
 #define PI_KI_CURRENT_BETA  0.1f    // β轴电流环积分增益 (增大以减少稳态误差)
 #define PI_I_OUT_MAX  0.9f          // 电流环输出最大值 (调制比)
 #define PI_I_OUT_MIN  -0.9f         // 电流环输出最小值 (αβ坐标系可以为负)
-
 // --- 默认参考值 ---
 #define V_REF_DEFAULT 5.0f     // 默认参考电压 (RMS)
 #define I_REF_DEFAULT 0.5f      // 默认参考电流 (RMS)
