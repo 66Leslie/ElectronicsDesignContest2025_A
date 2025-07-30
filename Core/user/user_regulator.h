@@ -46,7 +46,7 @@ typedef enum {
 // 归一化参数：基于30V标称电压整定，自动适应25V-65V范围
 #define PI_KP_V_NORM 0.9f        // 归一化电压环比例增益 (基于标称电压)
 #define PI_KI_V_NORM 0.36f       // 归一化电压环积分增益 (基于标称电压)
-#define PI_V_OUT_MAX  0.95f      // 电压环输出最大值 (归一化调制比)
+#define PI_V_OUT_MAX  1.1547f    // 电压环输出最大值 (SVPWM扩展调制比: 2/√3)
 #define PI_V_OUT_MIN  0.0f       // 电压环输出最小值 (归一化调制比)
 
 // --- αβ坐标系电流环控制参数 (20kHz更新) - 调整参数以改善响应 ---
@@ -217,8 +217,6 @@ void Voltage_PI_Norm_Init(Voltage_PI_Norm_t* pi, float kp_norm, float ki_norm,
 void Voltage_PI_Norm_Reset(Voltage_PI_Norm_t* pi);
 float Voltage_PI_Norm_Update(Voltage_PI_Norm_t* pi, float v_ref, float v_feedback, float v_dc_actual);
 
-// 测试函数 (可选)
-void Test_Voltage_PI_Normalization(void);
 
 // ============================================================================
 // αβ坐标系电流控制器函数声明

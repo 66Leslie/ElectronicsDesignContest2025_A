@@ -342,20 +342,38 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         default:
             {
                 float final_mod_ratio = (ctrl_mode == CONTROL_MODE_VOLTAGE) ? mod_output : modulation_ratio;
-                final_mod_ratio = _fsat(final_mod_ratio, 1.0f, 0.0f);
+
+                // 关键点1: 放开调制比上限到 1.1547f，即 2/sqrt(3)，实现SVPWM电压利用率
+                // SVPWM原理：通过注入三次谐波等共模分量，提高直流母线电压利用率约15.5%
+                // 从标准SPWM的0.866*Vdc提升到1.0*Vdc，线电压RMS可达Vdc/√2
+                final_mod_ratio = _fsat(final_mod_ratio, 1.1547f, 0.0f);
+
                 // 获取相位信息
                 float cos_theta = g_sogi_qsg.cos_theta;
                 float sin_theta = g_sogi_qsg.sin_theta;
 
-                // 三相SPWM生成 (相位差120°)
-                float cos_theta_A = cos_theta;                                               // A相: cos(θ)
-                float cos_theta_B = cos_theta * (-0.5f) + sin_theta * (0.866025f);           // B相: cos(θ-120°)
-                float cos_theta_C = cos_theta * (-0.5f) - sin_theta * (0.866025f);           // C相: cos(θ+120°)
+                // 步骤1: 生成原始的三相调制信号 (范围: [-final_mod_ratio, +final_mod_ratio])
+                float u_a = final_mod_ratio * (cos_theta);                                       // A相: m*cos(θ)
+                float u_b = final_mod_ratio * (cos_theta * (-0.5f) + sin_theta * (0.866025f));  // B相: m*cos(θ-120°)
+                float u_c = final_mod_ratio * (cos_theta * (-0.5f) - sin_theta * (0.866025f));  // C相: m*cos(θ+120°)
 
-                // 计算三相PWM占空比
-                duty_A_float = ((cos_theta_A + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_mod_ratio;
-                duty_B_float = ((cos_theta_B + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_mod_ratio;
-                duty_C_float = ((cos_theta_C + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_mod_ratio;
+                // 步骤2: 找出三相调制信号的瞬时最大值和最小值 (Min-Max法)
+                float u_max = fmaxf(u_a, fmaxf(u_b, u_c));
+                float u_min = fminf(u_a, fminf(u_b, u_c));
+
+                // 步骤3: 计算需要注入的共模电压偏置 (三次谐波注入的等效实现)
+                float u_offset = -0.5f * (u_max + u_min);
+
+                // 步骤4: 将偏置注入三相，得到新的调制信号 (范围被钳位在 [-1, 1] 区间内)
+                float mod_A = u_a + u_offset;
+                float mod_B = u_b + u_offset;
+                float mod_C = u_c + u_offset;
+
+                // 步骤5: 基于新的调制信号计算PWM占空比
+                // (mod_A/B/C + 1.0f) * 0.5f 将 [-1, 1] 的调制信号映射到 [0, 1] 的占空比系数
+                duty_A_float = (mod_A + 1.0f) * 0.5f * PWM_PERIOD_TIM8;
+                duty_B_float = (mod_B + 1.0f) * 0.5f * PWM_PERIOD_TIM8;
+                duty_C_float = (mod_C + 1.0f) * 0.5f * PWM_PERIOD_TIM8;
             }
             break;
     }
@@ -512,10 +530,10 @@ void key_proc(void)
             case KEY1:  // 参数增加 (+)
                 switch (current_page) {
                     case PAGE_MANUAL:
-                        // 手动模式：增加调制比
-                        if (modulation_ratio < 0.95f) {
+                        // 手动模式：增加调制比 (支持SVPWM范围到1.15)
+                        if (modulation_ratio < 1.15f) {
                             modulation_ratio += 0.05f;
-                            if (modulation_ratio > 0.95f) modulation_ratio = 0.95f;
+                            if (modulation_ratio > 1.15f) modulation_ratio = 1.15f;
                         }
                         break;
                     case PAGE_CV:
