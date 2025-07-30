@@ -550,21 +550,25 @@ void SOGIFilter_Reset(SOGIFilter_t *filter)
 
 /*
  * 函数名：void SOGICompositeFilter_Init(SOGICompositeFilter_t *filter, float target_freq, float sampling_freq,
- *                                      float damping_factor, float max_change, float initial_value)
- * 作用：初始化SOGI复合滤波器（限幅 + SOGI）
+ *                                      float damping_factor, float max_change, float alpha, float initial_value)
+ * 作用：初始化SOGI复合滤波器（限幅 + SOGI + 一阶低通）
  * 输入：filter - 复合滤波器结构体指针，target_freq - 目标频率，sampling_freq - 采样频率
- *       damping_factor - 阻尼系数，max_change - 限幅最大变化量，initial_value - 初始值
+ *       damping_factor - 阻尼系数，max_change - 限幅最大变化量，alpha - 一阶低通滤波系数，initial_value - 初始值
  * 返回值：无
- * 备注：先进行限幅滤波去除异常值，再使用SOGI提取基波分量，适用于含噪声的50Hz正弦信号
+ * 备注：先进行限幅滤波去除异常值，再使用SOGI提取基波分量，最后进行一阶低通滤波，适用于含噪声的50Hz正弦信号
  */
 void SOGICompositeFilter_Init(SOGICompositeFilter_t *filter, float target_freq, float sampling_freq,
-                             float damping_factor, float max_change, float initial_value)
+                             float damping_factor, float max_change, float alpha, float initial_value)
 {
     // 初始化限幅滤波器
     LimitFilter_Init(&filter->limit_filter, max_change, initial_value);
 
     // 初始化SOGI滤波器
     SOGIFilter_Init(&filter->sogi_filter, target_freq, sampling_freq, damping_factor);
+
+    // 初始化一阶低通滤波器参数
+    filter->alpha = alpha;
+    filter->last_output = initial_value;
 
     filter->initialized = 1;
 }
@@ -574,7 +578,7 @@ void SOGICompositeFilter_Init(SOGICompositeFilter_t *filter, float target_freq, 
  * 作用：更新SOGI复合滤波器
  * 输入：filter - 复合滤波器结构体指针，new_value - 新的输入值
  * 返回值：float - 滤波后的值
- * 备注：对于20kHz采样的50Hz信号，先限幅再SOGI滤波，有效提取基波分量
+ * 备注：对于20kHz采样的50Hz信号，先限幅再SOGI滤波，最后一阶低通滤波，有效提取基波分量并进一步平滑
  */
 float SOGICompositeFilter_Update(SOGICompositeFilter_t *filter, float new_value)
 {
@@ -586,9 +590,10 @@ float SOGICompositeFilter_Update(SOGICompositeFilter_t *filter, float new_value)
     // 第二步：SOGI滤波，提取50Hz基波分量
     float step2 = SOGIFilter_Update(&filter->sogi_filter, step1);
 
-    //
+    // 第三步：一阶低通滤波
+    float step3 = Alpha_Filter(step2, &filter->last_output, filter->alpha);
 
-    return step2;
+    return step3;
 }
 
 /*
@@ -604,4 +609,7 @@ void SOGICompositeFilter_Reset(SOGICompositeFilter_t *filter)
 
     // 重置SOGI滤波器
     SOGIFilter_Reset(&filter->sogi_filter);
+
+    // 重置一阶低通滤波器状态
+    filter->last_output = 0.0f;
 }

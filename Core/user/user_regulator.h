@@ -45,7 +45,7 @@ typedef enum {
 // --- 归一化电压环 (50Hz更新) - 输出归一化调制比 ---
 // 归一化参数：基于30V标称电压整定，自动适应25V-65V范围
 #define PI_KP_V_NORM 0.9f        // 归一化电压环比例增益 (基于标称电压)
-#define PI_KI_V_NORM 0.36f       // 归一化电压环积分增益 (基于标称电压)
+#define PI_KI_V_NORM 0.3f       // 归一化电压环积分增益 (基于标称电压)
 #define PI_V_OUT_MAX  1.1547f    // 电压环输出最大值 (SVPWM扩展调制比: 2/√3)
 #define PI_V_OUT_MIN  0.0f       // 电压环输出最小值 (归一化调制比)
 

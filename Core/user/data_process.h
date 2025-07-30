@@ -109,10 +109,12 @@ typedef struct {
     uint8_t initialized;            // 初始化标志
 } SOGIFilter_t;
 
-// SOGI复合滤波器状态结构体（限幅 + SOGI）
+// SOGI复合滤波器状态结构体（限幅 + SOGI + 一阶低通）
 typedef struct {
     LimitFilter_t limit_filter;     // 限幅滤波器
     SOGIFilter_t sogi_filter;       // SOGI滤波器
+    float alpha;                    // 一阶低通滤波系数
+    float last_output;              // 一阶低通滤波器上次输出值
     uint8_t initialized;            // 初始化标志
 } SOGICompositeFilter_t;
 // ============================================================================
@@ -123,7 +125,7 @@ float Composite_Filter(float new_value, float buffer[], uint16_t size, uint16_t 
 
 float SOGICompositeFilter_Update(SOGICompositeFilter_t *filter, float new_value);
 void SOGICompositeFilter_Init(SOGICompositeFilter_t *filter, float target_freq, float sampling_freq,
-                             float damping_factor, float max_change, float initial_value);
+                             float damping_factor, float max_change, float alpha, float initial_value);
 void SOGICompositeFilter_Reset(SOGICompositeFilter_t *filter);
 // ============================================================================
 // 滤波器初始化和操作函数声明
@@ -149,7 +151,7 @@ float SOGIFilter_Update(SOGIFilter_t *filter, float input);
 void SOGIFilter_Reset(SOGIFilter_t *filter);
 
 void SOGICompositeFilter_Init(SOGICompositeFilter_t *filter, float target_freq, float sampling_freq,
-                             float damping_factor, float max_change, float initial_value);
+                             float damping_factor, float max_change, float alpha, float initial_value);
 float SOGICompositeFilter_Update(SOGICompositeFilter_t *filter, float new_value);
 void SOGICompositeFilter_Reset(SOGICompositeFilter_t *filter);
 

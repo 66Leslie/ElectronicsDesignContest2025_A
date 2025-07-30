@@ -136,18 +136,18 @@ void user_regulator_init(void)
     Dual_Loop_Control_Init();
     // 初始化状态机,进入等待状态
     // 初始化SOGI复合滤波器
-    SOGICompositeFilter_Init(&sogi_filter_ia, 
-                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ, 
-                            SOGI_DAMPING_FACTOR, 0.026f, 0.0f);
-    SOGICompositeFilter_Init(&sogi_filter_ib, 
-                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ, 
-                            SOGI_DAMPING_FACTOR, 0.026f, 0.0f);
-    SOGICompositeFilter_Init(&sogi_filter_vab, 
-                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ, 
-                            SOGI_DAMPING_FACTOR, 0.026f, 0.0f);
-    SOGICompositeFilter_Init(&sogi_filter_vbc, 
-                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ, 
-                            SOGI_DAMPING_FACTOR, 0.026f, 0.0f);
+    SOGICompositeFilter_Init(&sogi_filter_ia,
+                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ,
+                            SOGI_DAMPING_FACTOR, 0.026f, 0.1f, 0.0f);
+    SOGICompositeFilter_Init(&sogi_filter_ib,
+                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ,
+                            SOGI_DAMPING_FACTOR, 0.026f, 0.1f, 0.0f);
+    SOGICompositeFilter_Init(&sogi_filter_vab,
+                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ,
+                            SOGI_DAMPING_FACTOR, 0.026f, 0.1f, 0.0f);
+    SOGICompositeFilter_Init(&sogi_filter_vbc,
+                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ,
+                            SOGI_DAMPING_FACTOR, 0.026f, 0.1f, 0.0f);
     // 初始化参考信号选择
     current_reference_signal = REF_SIGNAL_INTERNAL;  // 默认使用内部参考信号
 }
@@ -264,9 +264,12 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         // 真实值 = m * 显示值 + c 低参考值 高参考值 (V_oled1, V_real1) 和 (V_oled2, V_real2)
         //ac_voltage_rms_AB 
         // 应用你通过两点校准计算出的新系数 m 和 c
-        const float cal_m = 0.993f; // 示例值：新的斜率
-        const float cal_c = 0.185f; // 示例值：新的截距
-        ac_voltage_rms_AB = ac_voltage_rms_AB * cal_m + cal_c;
+        const float cal_m_Vab = 0.993f; // 示例值：新的斜率
+        const float cal_c_Vab = 0.2417f; // 示例值：新的截距
+        ac_voltage_rms_AB = ac_voltage_rms_AB * cal_m_Vab + cal_c_Vab;
+        const float cal_m_Vbc = 0.9938f; // 示例值：新的斜率
+        const float cal_c_Vbc = 0.1999f;
+        ac_voltage_rms_BC = ac_voltage_rms_BC * cal_m_Vbc + cal_c_Vbc;
         // 最终结果限制，避免异常值
         ac_current_rms_A = _fsat(ac_current_rms_A, 100.0f, 0.0f);
         ac_voltage_rms_AB = _fsat(ac_voltage_rms_AB, 1000.0f, 0.0f);
@@ -672,7 +675,7 @@ void Update_Disp(void)
     }
 }
 /**
- * @brief 频率调节页面显示 - 开环频率调节模式
+ * @brief 频率调节页面显示 - 开环频率调节模式 最多8行
  */
 void Display_Freq_Mode_Page(void)
 {
@@ -683,7 +686,8 @@ void Display_Freq_Mode_Page(void)
     OLED_Println(OLED_6X8, "FREQ PWM:%s", pwm_enabled ? "ON" : "OFF");
     OLED_Println(OLED_6X8, "Freq:%3dHz", variable_freq);
     OLED_Println(OLED_6X8, "Mod:%.1f%% (Open Loop)", modulation_ratio * 100.0f);
-    OLED_Println(OLED_6X8, "V_AB:%.2fV V_BC:%.2fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
+    OLED_Println(OLED_6X8, "V_AB:%.2fV", ac_voltage_rms_AB);
+    OLED_Println(OLED_6X8, "V_BC:%.2fV", ac_voltage_rms_BC);
     OLED_Println(OLED_6X8, "I_A:%.2fA I_B:%.2fA", ac_current_rms_A, ac_current_rms_B);
     OLED_Println(OLED_6X8, "K1:+ K2:- K3:PWM K5:Page");
 }
@@ -698,7 +702,8 @@ void Display_Manual_Mode_Page(void)
     // 手动模式显示
     OLED_Println(OLED_6X8, "MANUAL PWM:%s", pwm_enabled ? "ON" : "OFF");
     OLED_Println(OLED_6X8, "Mod:%.1f%% (Manual)", modulation_ratio * 100.0f);
-    OLED_Println(OLED_6X8, "V_AB:%.2fV V_BC:%.2fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
+    OLED_Println(OLED_6X8, "V_AB:%.2fV", ac_voltage_rms_AB);
+    OLED_Println(OLED_6X8, "V_BC:%.2fV", ac_voltage_rms_BC);
     OLED_Println(OLED_6X8, "I_A:%.2fA I_B:%.2fA", ac_current_rms_A, ac_current_rms_B);
     OLED_Println(OLED_6X8, "Freq:%.1fHz", variable_freq);
     OLED_Println(OLED_6X8, "1/2:+- 3:PWM 5:Page");
@@ -715,8 +720,9 @@ void Display_CV_Mode_Page(void)
     OLED_Println(OLED_6X8, "CV PWM:%s", pwm_enabled ? "ON" : "OFF");
     OLED_Println(OLED_6X8, "Set:%.1fV Act:%.2fV", v_ref, ac_voltage_rms_AB);
     OLED_Println(OLED_6X8, "Mod:%.1f%% (Auto)", mod_output * 100.0f);
+    OLED_Println(OLED_6X8, "V_AB:%.2fV", ac_voltage_rms_AB);
+    OLED_Println(OLED_6X8, "V_BC:%.2fV", ac_voltage_rms_BC);
     OLED_Println(OLED_6X8, "I_A:%.2fA I_B:%.2fA", ac_current_rms_A, ac_current_rms_B);
-    OLED_Println(OLED_6X8, "AB:%.2fV BC:%.2fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
     OLED_Println(OLED_6X8, "Freq:%.1fHz (Fixed)", variable_freq);
     OLED_Println(OLED_6X8, "1/2:+- 3:PWM 5:Page");
 }
@@ -732,8 +738,9 @@ void Display_CC_Mode_Page(void)
     OLED_Println(OLED_6X8, "CC Mode PWM:%s", pwm_enabled ? "ON" : "OFF");
     OLED_Println(OLED_6X8, "Set:%.2fA Act:%.2fA", i_ref, ac_current_rms_A);
     OLED_Println(OLED_6X8, "Mod:%.1f%% (Auto)", mod_output * 100.0f);
+    OLED_Println(OLED_6X8, "V_AB:%.2fV", ac_voltage_rms_AB);
+    OLED_Println(OLED_6X8, "V_BC:%.2fV", ac_voltage_rms_BC);
     OLED_Println(OLED_6X8, "A:%.2fA B:%.2fA", ac_current_rms_A, ac_current_rms_B);
-    OLED_Println(OLED_6X8, "AB:%.1fV BC:%.1fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
     OLED_Println(OLED_6X8, "Freq: %.1fHz (Fixed)", variable_freq);
     OLED_Println(OLED_6X8, "K1:+ K2:- K3:PWM K5:Page");
 }
@@ -995,7 +1002,7 @@ void Voltage_PI_Norm_Init(Voltage_PI_Norm_t* pi, float kp_norm, float ki_norm,
     pi->output_max = output_max;
     pi->output_min = output_min;
     pi->last_error_norm = 0.0f;
-    pi->v_dc_actual = v_dc_nominal;      // 初始化为标称值
+    pi->v_dc_actual = 50.0f;// 初始化为标称值
     pi->v_dc_nominal = v_dc_nominal;
 }
 
@@ -1074,33 +1081,6 @@ float Voltage_PI_Norm_Update(Voltage_PI_Norm_t* pi, float v_ref, float v_feedbac
 
     return pi->output;
 }
-
-// ============================================================================
-// 归一化PI控制器测试函数 (可选，用于验证)
-// ============================================================================
-/**
- * @brief 测试归一化PI控制器在不同直流母线电压下的表现
- * @note 此函数仅用于开发测试，实际应用中可删除
- */
-void Test_Voltage_PI_Normalization(void)
-{
-    // 测试场景：相同的电压误差，不同的直流母线电压
-    float v_ref_test = 15.0f;      // 参考电压15V
-    float v_feedback_test = 12.0f; // 反馈电压12V (误差3V)
-
-    // 测试30V直流母线电压 (标称值)
-    float mod_30v = Voltage_PI_Norm_Update(&voltage_pi_norm, v_ref_test, v_feedback_test, 30.0f);
-
-    // 测试60V直流母线电压 (2倍标称值)
-    float mod_60v = Voltage_PI_Norm_Update(&voltage_pi_norm, v_ref_test, v_feedback_test, 60.0f);
-
-    // 理论上：mod_60v 应该约等于 mod_30v * 0.5
-    // 因为60V直流母线只需要一半的调制比就能产生相同的输出电压
-
-    user_regulator_debug("Norm PI Test: 30V->%.3f, 60V->%.3f, Ratio:%.3f",
-                        mod_30v, mod_60v, mod_60v/mod_30v);
-}
-
 // ============================================================================
 // DC系数保存
 //     const float adc2_in3_val = (float)adc2_in3_raw * 3.3f / 4096.0f;

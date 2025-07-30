@@ -29,12 +29,14 @@ void SOGI_Filter_Example_Init(void)
     // - 采样频率：20kHz
     // - 阻尼系数：1.414 (√2，最优响应)
     // - 限幅最大变化：0.5V (根据信号特性调整)
+    // - 一阶低通滤波系数：0.2f (alpha值)
     // - 初始值：1.65V (信号偏置值)
-    SOGICompositeFilter_Init(&sogi_filter, 
+    SOGICompositeFilter_Init(&sogi_filter,
                             SOGI_TARGET_FREQ,      // 50Hz
                             SOGI_SAMPLING_FREQ,    // 20kHz
                             SOGI_DAMPING_FACTOR,   // 1.414
                             0.5f,                  // 限幅变化量
+                            0.2f,                  // 一阶低通滤波系数
                             1.65f);                // 初始值（偏置）
 }
 
