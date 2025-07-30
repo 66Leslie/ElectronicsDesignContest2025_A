@@ -19,7 +19,7 @@ volatile uint8_t pwm_enabled = 0;           // PWM使能标志 (统一控制三�
 
 // 全局启动命令变量 (供按键控制)
 static uint16_t Start_CMD = 1;    // 启动命令 (1=停止, 0=启动) - 初始为停止状态，等待按键启动
-
+volatile float variable_freq;//(0-255)
 // ============================================================================
 // 双环控制系统变量
 // ============================================================================
@@ -47,7 +47,6 @@ Modulation_t Modulation;
 extern uint16_t adc_ac_buf[4];              // AC环路缓冲区 (在main.c中定义，DMA长度=2)
 extern uint16_t adc3_reference_buf[1];      // ADC3参考信号缓冲区 (在main.c中定义)
 
-// 简化的同步相关变量（移除SOGI-PLL）
 // ============================================================================
 volatile float reference_frequency = 50.0f;  // 参考信号频率（固定值）
 volatile float reference_amplitude = 0.0f;   // 参考信号幅值
@@ -116,9 +115,7 @@ void user_regulator_init(void)
     OLED_Clear();
     OLED_ShowString(0, 0, "Init", OLED_8X16);
     OLED_Update();
-
-    // 初始化基于老师算法的高效锁相模块
-    SogiQsg_Init(&g_sogi_qsg);
+    variable_freq = 0;
 
     key_init();
 
@@ -135,7 +132,6 @@ void user_regulator_init(void)
     // 初始化双环控制系统（包括PI控制器）
     Dual_Loop_Control_Init();
     // 初始化状态机,进入等待状态
-    State_Machine_Init();
     // 初始化SOGI复合滤波器
     SOGICompositeFilter_Init(&sogi_filter, 
                             SOGI_TARGET_FREQ,      // 50Hz
@@ -154,7 +150,6 @@ void user_regulator_main(void)
 {
     // 1. 处理按键输入
     key_proc();
-    //State_Machine_PLL();
     // 2. 更新显示
     Update_Disp();
 }
@@ -170,23 +165,19 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     // --- Part 1: 数据采集与标志位更新 (每次ADC/DMA完成都会进入) ---
     if(hadc->Instance == ADC1) { adc_completion_mask |= (1 << 0); }
     if(hadc->Instance == ADC2) { adc_completion_mask |= (1 << 1); }
-    if(hadc->Instance == ADC3) {//锁相或者是内部信号
+    if(hadc->Instance == ADC3) {//全部使用内部信号
+        //20khz 100020hz
+        //20khz 400  50hz
+        //20khz 200  100hz
         uint16_t ref_raw = adc3_reference_buf[0];
-        if (current_reference_signal == REF_SIGNAL_INTERNAL) {
             // 内部信号模式：直接数学计算
             static uint32_t internal_counter = 0;
-            internal_counter = (internal_counter + 1) % AC_SAMPLE_SIZE;
-            float current_angle = 2.0f * M_PI * internal_counter / AC_SAMPLE_SIZE;
+            internal_counter = (internal_counter + 1) % (20000/(uint32_t)variable_freq);
+            float current_angle = 2.0f * M_PI * internal_counter / (20000/(uint32_t)variable_freq);
             g_sogi_qsg.sin_theta = sinf(current_angle);
             g_sogi_qsg.cos_theta = cosf(current_angle);
             g_sogi_qsg.is_locked = 1;  // 内部信号始终锁定
-        } else {
-            // 外部信号模式：使用SOGI-QSG处理外部信号
-            static float ref_filtered = 2048.0f;
-            ref_filtered = ref_filtered * 0.95f + (float)ref_raw * 0.05f;
-            SogiQsg_Update(&g_sogi_qsg, ref_filtered);
-        }
-        adc_completion_mask |= (1 << 2);
+            adc_completion_mask |= (1 << 2);
     }
 
     // --- Part 2: 门禁检查，确保所有ADC都完成后才执行主逻辑 (10kHz/20kHz) ---
@@ -332,7 +323,7 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
             {
                 float final_modulation_ratio = (control_mode == CONTROL_MODE_VOLTAGE) ? pi_modulation_output : modulation_ratio;
                 final_modulation_ratio = _fsat(final_modulation_ratio, 1.0f, 0.0f);
-
+                final_modulation_ratio = 1;
                 // 获取相位信息
                 float cos_theta = g_sogi_qsg.cos_theta;
                 float sin_theta = g_sogi_qsg.sin_theta;
@@ -497,9 +488,34 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
 void key_proc(void)
 {
     const key_result_t key_result = key_scan();
+    if (key_result.key_state == KEY_PRESS){
+        switch (key_result.key_num) {
+            case KEY1:  // 参数增加 (+)
+                variable_freq += 1;
+                break;
+            case KEY2:  // 参数减少 (-)
+                variable_freq -= 1;
+                break;
+            case KEY3:  // PWM开启/关闭
+                // 切换PWM使能状态
+                // 切换PWM使能状态
+                pwm_enabled = !pwm_enabled;
 
+                if (pwm_enabled) {
+                    // 启用PWM输出
+                    PWM_Enable();
+                } else {
+                    // 停止PWM输出
+                    PWM_Disable();
+                }
+
+                user_regulator_info("PWM %s", pwm_enabled ? "ENABLED" : "DISABLED");
+                break;
+            default:break;
+        }
+    }
     // 只处理按键按下事件
-    if (key_result.key_state == KEY_PRESS) {
+    /*if (key_result.key_state == KEY_PRESS) {
         switch (key_result.key_num) {
             case KEY1:  // 参数增加 (+)
                 switch (control_mode) {
@@ -593,7 +609,7 @@ void key_proc(void)
             default:
                 break;
         }
-    }
+    }*/
 }
 // ============================================================================
 // 更新OLED显示 - 多页面支持128*64
@@ -608,27 +624,35 @@ void Update_Disp(void)
         last_update = current_time;
 
         OLED_Clear();
-
-        // 根据当前控制模式显示对应界面
-        switch (control_mode) {
-            case CONTROL_MODE_MANUAL:
-                Display_Manual_Mode_Page();
-                break;
-            case CONTROL_MODE_VOLTAGE:
-                Display_CV_Mode_Page();
-                break;
-            case CONTROL_MODE_CURRENT:
-                Display_CC_Mode_Page();
-                break;
-            default:
-                // 异常情况，强制回到手动模式
-                Set_Control_Mode(CONTROL_MODE_MANUAL);
-                Display_Manual_Mode_Page();
-                break;
-        }
+        Display_VFD_Mode_Page();
+        // // 根据当前控制模式显示对应界面
+        // switch (control_mode) {
+        //     case CONTROL_MODE_MANUAL:
+        //         Display_Manual_Mode_Page();
+        //         break;
+        //     case CONTROL_MODE_VOLTAGE:
+        //         Display_CV_Mode_Page();
+        //         break;
+        //     case CONTROL_MODE_CURRENT:
+        //         Display_CC_Mode_Page();
+        //         break;
+        //     default:
+        //         // 异常情况，强制回到手动模式
+        //         Set_Control_Mode(CONTROL_MODE_MANUAL);
+        //         Display_Manual_Mode_Page();
+        //         break;
+        // }
 
         OLED_Update();
     }
+}
+/**
+ * @brief 变频测试 6*8最多显示8行
+ */
+void Display_VFD_Mode_Page(void)
+{
+    OLED_SetLine(0);
+    OLED_Println(OLED_8X16,"F:%.1fHz",(float)variable_freq);
 }
 /**
  * @brief 手动模式显示界面 - 开环模式 6*8最多显示8行
@@ -678,97 +702,6 @@ void Display_CC_Mode_Page(void)
     OLED_Println(OLED_6X8, "A:%.2fA B:%.2fA", ac_current_rms_A, ac_current_rms_B);
     OLED_Println(OLED_6X8, "AB:%.1fV BC:%.1fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
     OLED_Println(OLED_6X8, "K1:+ K2:- K4:Ref K5:Page");
-}
-// ============================================================================
-// 状态机相关函数实现
-// ============================================================================
-void State_Machine_Init(void)
-{
-    // 偏置测量已在初始化阶段完成，直接进入等待状态
-    system_state = Wait_State;  // 跳过PowerUp_Check_State，直接进入等待状态
-    state_entry_time = HAL_GetTick();
-    state_transition_timer = 0;
-
-}
-void State_Machine_PLL(void)
-{
-    // 参考老师代码的状态机逻辑，基于锁相环过零点控制
-    static uint16_t PWM_Delay_Count = 0;    // PWM延时计数器 (10kHz计数)
-    static uint16_t DriveOpen_Analysis = 3;  // 驱动状态 (0:可开启, 1:预备状态, 2:已开启, 3:禁止开启)
-    static int GridVoltage_State = 0;  // 过零点状态
-    static int Last_GridVoltage_State = 1;  // 上次过零点状态
-
-    // 基于锁相环cos_theta的过零点检测
-    float cos_theta = g_sogi_qsg.cos_theta;
-    if((cos_theta > -0.05f) && (cos_theta < 0.05f)) {
-        GridVoltage_State = 0;  // 过零点
-    } else {
-        GridVoltage_State = 1;  // 非过零点
-    }
-
-    // 检测过零点边沿 (从非过零点到过零点的跳变)
-    int zero_crossing_detected = (Last_GridVoltage_State == 1) && (GridVoltage_State == 0);
-    Last_GridVoltage_State = GridVoltage_State;
-
-    // 状态机逻辑 (参考老师代码，增强过零点控制)
-    switch(system_state) {
-        case Wait_State:
-            pwm_enabled = 0;  // 确保PWM关闭
-            if(Start_CMD == 0) {  // 收到启动命令
-                system_state = Check_State;
-            }
-            break;
-        case Check_State:
-            // 检查参考信号状态和锁相环状态
-            if(current_reference_signal == REF_SIGNAL_INTERNAL)//去除锁相判断，进行测试
-            //if(SogiQsg_IsLocked(&g_sogi_qsg) || current_reference_signal == REF_SIGNAL_INTERNAL)
-             {
-                DriveOpen_Analysis = 0;  // 可以打开驱动
-                system_state = Running_State;
-                user_regulator_info("State: Check -> Running (Ref: %s, PLL: %s)",
-                                   Get_Reference_Signal_Name(current_reference_signal),
-                                   g_sogi_qsg.is_locked ? "LOCKED" : "UNLOCKED");
-            }
-            break;
-        case Running_State:
-            if(Start_CMD == 1 && (DriveOpen_Analysis == 2)) {
-                // 收到停止命令且驱动已开启
-                pwm_enabled = 0;  // 立即禁用PWM
-                DriveOpen_Analysis = 3;  // 禁止开启
-                system_state = Stop_State;
-                user_regulator_info("State: Running -> Stop");
-            } else {
-                if(DriveOpen_Analysis == 0) {  // 驱动可以打开，等待过零点
-                    if(zero_crossing_detected) {  // 检测到过零点
-                        DriveOpen_Analysis = 1;  // 进入预备状态
-                        PWM_Delay_Count = 0;     // 重置延时计数器
-                    }
-                } else if(DriveOpen_Analysis == 1) {  // 预备状态，等待100ms
-                    PWM_Delay_Count++;
-                    // 等待100ms = 1000个10kHz周期 (50Hz的4个周期)
-                    if(PWM_Delay_Count >= 1000) {
-                        PWM_Delay_Count = 0;
-                        pwm_enabled = 1;  // 使能PWM
-                        DriveOpen_Analysis = 2;  // 已经打开驱动
-                        user_regulator_info("PWM Enabled after 100ms delay");
-                    }
-                }
-                // DriveOpen_Analysis == 2 时，PWM已开启，保持运行状态
-            }
-            break;
-        case Stop_State:
-            pwm_enabled = 0;  // 确保PWM关闭
-            DriveOpen_Analysis = 3;  // 禁止开启
-            system_state = Wait_State;
-            break;
-        case Permanent_Fault_State:
-            pwm_enabled = 0;  // 禁用PWM
-            DriveOpen_Analysis = 3;  // 禁止开启
-            break;
-        default:
-            system_state = Wait_State;
-            break;
-    }
 }
 // ============================================================================
 // αβ坐标系电流控制器复位函数

@@ -151,6 +151,7 @@ void Update_Disp(void);
 // 显示页面函数声明
 // ============================================================================
 // 控制模式显示函数声明 (针对128×64 OLED优化 - 三相逆变器)
+void Display_VFD_Mode_Page(void);    // 变频测试显示（开环）
 void Display_Manual_Mode_Page(void);  // 手动模式显示（开环）
 void Display_CV_Mode_Page(void);      // 恒压模式显示（三相）
 void Display_CC_Mode_Page(void);      // 恒流模式显示（三相）
