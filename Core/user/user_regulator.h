@@ -17,7 +17,9 @@
 // ============================================================================
 #define SINE_TABLE_SIZE 400   // 10kHz/25Hz = 400个采样点，三相SPWM生成
 #define PWM_PERIOD_TIM8 8499     // TIM8的ARR (三相PWM)
-#define V_DC 30.0f            // 直流母线电压 30V
+#define V_DC_NOMINAL 30.0f       // 标称直流母线电压 30V (用于归一化基准)
+#define V_DC_MIN 25.0f           // 最小直流母线电压
+#define V_DC_MAX 65.0f           // 最大直流母线电压
 // 修正的测量增益系数 - 基于硬件设计计算 (修正数值避免无穷大)
 #define MeasureGain 0.000805664f     // ADC转换增益: 3.3V / 4096 = 0.000805664f
 // 偏置测量相关定义 - 基于1.65V偏置
@@ -38,13 +40,14 @@ typedef enum {
 } Control_Mode_t;
 
 // ============================================================================
-// 独立环PI参数定义 - 电压环和电流环独立控制
+// 归一化电压环PI参数定义 - 适应不同直流母线电压
 // ============================================================================
-// --- 独立电压环 (50Hz更新) - 直接输出调制比 ---
-#define PI_KP_VOLTAGE 0.03f      // 电压环比例增益 (调制比输出，适当增大)
-#define PI_KI_VOLTAGE 0.012f      // 电压环积分增益 (调制比输出，适当增大)
-#define PI_V_OUT_MAX  0.9f       // 电压环输出最大值 (调制比)
-#define PI_V_OUT_MIN  0.0f       // 电压环输出最小值 (调制比)
+// --- 归一化电压环 (50Hz更新) - 输出归一化调制比 ---
+// 归一化参数：基于30V标称电压整定，自动适应25V-65V范围
+#define PI_KP_V_NORM 0.9f        // 归一化电压环比例增益 (基于标称电压)
+#define PI_KI_V_NORM 0.36f       // 归一化电压环积分增益 (基于标称电压)
+#define PI_V_OUT_MAX  0.95f      // 电压环输出最大值 (归一化调制比)
+#define PI_V_OUT_MIN  0.0f       // 电压环输出最小值 (归一化调制比)
 
 // --- αβ坐标系电流环控制参数 (20kHz更新) - 调整参数以改善响应 ---
 #define PI_KP_CURRENT_ALPHA 0.5f    // α轴电流环比例增益 (增大以提高响应速度)
@@ -70,6 +73,20 @@ typedef struct {
     float output_min;      // 输出最小值
     float last_error;      // 上次误差值
 } PI_Controller_t;
+
+// ============================================================================
+// 归一化电压PI控制器结构体 - 适应不同直流母线电压
+// ============================================================================
+typedef struct {
+    float kp_norm;         // 归一化比例增益 (基于标称电压)
+    float ki_norm;         // 归一化积分增益 (基于标称电压)
+    float output;          // 当前输出值 (归一化调制比 0-1)
+    float output_max;      // 输出最大值 (归一化调制比)
+    float output_min;      // 输出最小值 (归一化调制比)
+    float last_error_norm; // 上次归一化误差值
+    float v_dc_actual;     // 当前实际直流母线电压
+    float v_dc_nominal;    // 标称直流母线电压 (归一化基准)
+} Voltage_PI_Norm_t;
 
 // ============================================================================
 // αβ坐标系电流控制器结构体
@@ -119,16 +136,30 @@ typedef struct {
 extern SogiQsg_t g_sogi_qsg;  // 全局SOGI-QSG实例，基于老师的高效锁相算法
 
 // ============================================================================
-// 控制输出变量声明
+// 控制输出变量声明 (简化变量名)
 // ============================================================================
-extern volatile float current_reference_peak;      // 电流峰值指令 (由外环输出)
-extern volatile float current_reference_instant;   // 瞬时电流参考值 (20kHz)
-extern volatile float pi_modulation_output;        // 最终调制比输出
-extern volatile float current_feedback_instant;    // 瞬时电流反馈值
+extern volatile float i_ref_peak;          // 电流峰值指令 (由外环输出)
+extern volatile float i_ref_inst;          // 瞬时电流参考值 (20kHz)
+extern volatile float mod_output;          // 最终调制比输出
+extern volatile float i_fdbk_inst;         // 瞬时电流反馈值
 
 // αβ坐标系电流控制器实例
 extern Current_Controller_AlphaBeta_t CurrConReg;
 extern Modulation_t Modulation;
+
+// ============================================================================
+// PI控制器实例声明
+// ============================================================================
+extern PI_Controller_t voltage_pi;                 // 传统电压PI控制器 (兼容性保留)
+extern PI_Controller_t current_pi;                 // 电流PI控制器
+extern Voltage_PI_Norm_t voltage_pi_norm;          // 归一化电压PI控制器 (新增)
+
+// ============================================================================
+// 控制模式和参考值声明 (简化变量名)
+// ============================================================================
+extern volatile Control_Mode_t ctrl_mode;          // 当前控制模式
+extern volatile float v_ref;                       // 电压参考值 (RMS)
+extern volatile float i_ref;                       // 电流参考值 (RMS)
 
 // ============================================================================
 // 用户调节器模块函数声明
@@ -163,6 +194,32 @@ void PI_Controller_Init(PI_Controller_t* pi, float kp, float ki, float output_mi
 void PI_Controller_Reset(PI_Controller_t* pi);
 // 增量式PI控制器更新函数声明
 float PI_Controller_Update_Incremental(PI_Controller_t* pi, float reference, float feedback);
+
+// ============================================================================
+// 归一化电压PI控制器函数声明
+// ============================================================================
+/**
+ * 归一化电压PI控制器使用说明：
+ *
+ * 1. 初始化：使用基于30V标称电压整定的参数
+ *    Voltage_PI_Norm_Init(&voltage_pi_norm, PI_KP_V_NORM, PI_KI_V_NORM,
+ *                        PI_V_OUT_MIN, PI_V_OUT_MAX, V_DC_NOMINAL);
+ *
+ * 2. 运行时调用：自动适应25V-65V直流母线电压范围
+ *    float mod_ratio = Voltage_PI_Norm_Update(&voltage_pi_norm, v_ref, v_feedback, v_dc_actual);
+ *
+ * 3. 优势：
+ *    - PI参数具有电压无关性，在30V整定的参数可直接用于60V
+ *    - 自动补偿直流母线电压变化
+ *    - 保持相同的动态响应特性
+ */
+void Voltage_PI_Norm_Init(Voltage_PI_Norm_t* pi, float kp_norm, float ki_norm,
+                         float output_min, float output_max, float v_dc_nominal);
+void Voltage_PI_Norm_Reset(Voltage_PI_Norm_t* pi);
+float Voltage_PI_Norm_Update(Voltage_PI_Norm_t* pi, float v_ref, float v_feedback, float v_dc_actual);
+
+// 测试函数 (可选)
+void Test_Voltage_PI_Normalization(void);
 
 // ============================================================================
 // αβ坐标系电流控制器函数声明

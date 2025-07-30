@@ -22,20 +22,21 @@ uint16_t variable_freq;
 // ============================================================================
 // 双环控制系统变量
 // ============================================================================
-// 控制模式和参考值
-volatile Control_Mode_t control_mode = CONTROL_MODE_MANUAL;  // 当前控制模式
-volatile float voltage_reference = V_REF_DEFAULT;  // 电压参考值 (RMS)
-volatile float current_reference = I_REF_DEFAULT;  // 电流参考值 (RMS)
+// 控制模式和参考值 (简化变量名)
+volatile Control_Mode_t ctrl_mode = CONTROL_MODE_MANUAL;  // 当前控制模式
+volatile float v_ref = V_REF_DEFAULT;  // 电压参考值 (RMS)
+volatile float i_ref = I_REF_DEFAULT;  // 电流参考值 (RMS)
 
 // 双PI控制器实例
-PI_Controller_t voltage_pi;                 // 电压外环PI控制器 (慢环, 50Hz)
+PI_Controller_t voltage_pi;                 // 电压外环PI控制器 (慢环, 50Hz) - 保留兼容性
 PI_Controller_t current_pi;                 // 电流内环PI控制器 (快环, 20kHz瞬时值控制)
+Voltage_PI_Norm_t voltage_pi_norm;          // 归一化电压PI控制器 (新增)
 
-// 控制输出变量
-volatile float current_reference_peak = 0.0f;      // 电流峰值指令 (由外环输出)
-volatile float current_reference_instant = 0.0f;   // 瞬时电流参考值 (20kHz)
-volatile float pi_modulation_output = 0.0f;        // 最终调制比输出
-volatile float current_feedback_instant = 0.0f;    // 瞬时电流反馈值
+// 控制输出变量 (简化变量名)
+volatile float i_ref_peak = 0.0f;          // 电流峰值指令 (由外环输出)
+volatile float i_ref_inst = 0.0f;          // 瞬时电流参考值 (20kHz)
+volatile float mod_output = 0.0f;          // 最终调制比输出
+volatile float i_fdbk_inst = 0.0f;         // 瞬时电流反馈值
 
 // αβ坐标系电流控制器实例
 Current_Controller_AlphaBeta_t CurrConReg;
@@ -137,7 +138,7 @@ void user_regulator_init(void)
                             SOGI_SAMPLING_FREQ,    // 20kHz
                             SOGI_DAMPING_FACTOR,   // 1.414
                             0.026f,                  // 限幅变化量
-                            1.65f);                // 初始值（偏置）
+                            0.00f);                // 初始值（偏置）
     // 初始化参考信号选择
     current_reference_signal = REF_SIGNAL_INTERNAL;  // 默认使用内部参考信号
 }
@@ -194,33 +195,33 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     float current_B_base = ((int16_t)adc_ac_buf[2] - IacOffset_B) * MeasureGain;
     float voltage_BC_base = ((int16_t)adc_ac_buf[3] - VacOffset_BC) * MeasureGain;
 
-    // // 限幅滤波器：限制变化幅度，平滑信号
-    // static float current_A_last = 0.0f;
-    // static float current_B_last = 0.0f;
-    // static float voltage_AB_last = 0.0f;
-    // static float voltage_BC_last = 0.0f;
-    // static uint8_t filter_initialized = 0;
+    // 限幅滤波器：限制变化幅度，平滑信号
+    static float current_A_last = 0.0f;
+    static float current_B_last = 0.0f;
+    static float voltage_AB_last = 0.0f;
+    static float voltage_BC_last = 0.0f;
+    static uint8_t filter_initialized = 0;
 
-    // // 首次运行时初始化滤波器
-    // if (!filter_initialized) {
-    //     current_A_last = IacOffset_A * MeasureGain;
-    //     current_B_last = IacOffset_B * MeasureGain;
-    //     voltage_AB_last = VacOffset_AB * MeasureGain;
-    //     voltage_BC_last = VacOffset_BC * MeasureGain;
-    //     filter_initialized = 1;
-    // }
+    // 首次运行时初始化滤波器
+    if (!filter_initialized) {
+        current_A_last = IacOffset_A * MeasureGain;
+        current_B_last = IacOffset_B * MeasureGain;
+        voltage_AB_last = VacOffset_AB * MeasureGain;
+        voltage_BC_last = VacOffset_BC * MeasureGain;
+        filter_initialized = 1;
+    }
 
     // 应用限幅滤波器 - 使用data_process.c中的Limit_Filter函数
-    //const float MAX_CHANGE = 0.026f;//sin(0.45)/3.3=0.02591
-    // float current_A_filtered = Limit_Filter(current_A_base, &current_A_last, MAX_CHANGE);
-    // float current_B_filtered = Limit_Filter(current_B_base, &current_B_last, MAX_CHANGE);
-    // float voltage_AB_filtered = Limit_Filter(voltage_AB_base, &voltage_AB_last, MAX_CHANGE);
-    // float voltage_BC_filtered = Limit_Filter(voltage_BC_base, &voltage_BC_last, MAX_CHANGE);
+    const float MAX_CHANGE = 0.026f;//sin(0.45)/3.3=0.02591
+    float current_A_filtered = Limit_Filter(current_A_base, &current_A_last, MAX_CHANGE);
+    float current_B_filtered = Limit_Filter(current_B_base, &current_B_last, MAX_CHANGE);
+    float voltage_AB_filtered = Limit_Filter(voltage_AB_base, &voltage_AB_last, MAX_CHANGE);
+    float voltage_BC_filtered = Limit_Filter(voltage_BC_base, &voltage_BC_last, MAX_CHANGE);
     // 使用SOGI复合滤波器
-    float current_A_filtered = SOGICompositeFilter_Update(&sogi_filter, current_A_base);
-    float current_B_filtered = SOGICompositeFilter_Update(&sogi_filter, current_B_base);
-    float voltage_AB_filtered = SOGICompositeFilter_Update(&sogi_filter, voltage_AB_base);
-    float voltage_BC_filtered = SOGICompositeFilter_Update(&sogi_filter, voltage_BC_base);
+    //float current_A_filtered = SOGICompositeFilter_Update(&sogi_filter, current_A_base);
+    // float current_B_filtered = SOGICompositeFilter_Update(&sogi_filter, current_B_base);
+    // float voltage_AB_filtered = SOGICompositeFilter_Update(&sogi_filter, voltage_AB_base);
+    // float voltage_BC_filtered = SOGICompositeFilter_Update(&sogi_filter, voltage_BC_base);
 
     // 累加基础值的平方（用于RMS计算）- 添加数值保护
     // 限制基础值范围，避免平方后溢出
@@ -247,10 +248,10 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         float current_B_avg = fmaxf(current_B_sum / (float)AC_SAMPLE_SIZE, 0.0f);
         float voltage_BC_avg = fmaxf(voltage_BC_sum / (float)AC_SAMPLE_SIZE, 0.0f);
 
-        ac_current_rms_A = sqrtf(current_A_avg) * 5.1778f - 0.0111f;
-        ac_voltage_rms_AB = sqrtf(voltage_AB_avg) * 68.011f - 0.1784f;
+        ac_current_rms_A = sqrtf(current_A_avg) * 5.1778f - 0.0111f ;
+        ac_voltage_rms_AB = sqrtf(voltage_AB_avg) * 68.011f - 0.1784f + 0.2f ;//手动矫正0.1
         ac_current_rms_B = sqrtf(current_B_avg) * 5.1778f - 0.0111f;
-        ac_voltage_rms_BC = sqrtf(voltage_BC_avg) * 68.011f - 0.1784f;
+        ac_voltage_rms_BC = sqrtf(voltage_BC_avg) * 68.011f - 0.1784f + 0.1f;
 
         // 最终结果限制，避免异常值
         ac_current_rms_A = _fsat(ac_current_rms_A, 100.0f, 0.0f);
@@ -268,15 +269,20 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
 
         // 3. 执行外环控制器 (电压环或电流环参考值更新)
         if (pwm_enabled) {
-            switch (control_mode) {
+            switch (ctrl_mode) {
                 case CONTROL_MODE_VOLTAGE:
-                    // 电压环PI控制器直接计算调制比，并存储供快环使用
-                    pi_modulation_output = PI_Controller_Update_Incremental(&voltage_pi, voltage_reference, ac_voltage_rms_AB);
-                    pi_modulation_output = _fsat(pi_modulation_output, PI_V_OUT_MAX, PI_V_OUT_MIN);
+                    // 使用归一化电压PI控制器，自动适应不同直流母线电压
+                    // TODO: 实际应用中应通过ADC测量直流母线电压
+                    // 示例: float v_dc_measured = ADC_Read_DC_Bus_Voltage();
+                    float v_dc_actual = V_DC_NOMINAL;  // 临时使用标称值，实际应测量
+
+                    mod_output = Voltage_PI_Norm_Update(&voltage_pi_norm, v_ref,
+                                                       ac_voltage_rms_AB, v_dc_actual);
+                    mod_output = _fsat(mod_output, PI_V_OUT_MAX, PI_V_OUT_MIN);
                     break;
-                case CONTROL_MODE_CURRENT:             
+                case CONTROL_MODE_CURRENT:
                     // 更新调制比输出用于显示 (取三相调制信号的平均幅值)
-                    pi_modulation_output = Modulation.Ma;
+                    mod_output = Modulation.Ma;
                     break;
                 case CONTROL_MODE_MANUAL:
                 default:
@@ -300,10 +306,10 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     float current_B_calibrated = current_B_filtered * 5.1778f - 0.0111f;
     // 根据控制模式计算三相PWM占空比
     float duty_A_float = 0.0f, duty_B_float = 0.0f, duty_C_float = 0.0f;
-    switch (control_mode) {
+    switch (ctrl_mode) {
         case CONTROL_MODE_CURRENT:
-            current_reference_peak = current_reference * 1.414213562f;
-            Current_Controller_AlphaBeta_Update(current_reference_peak, current_A_calibrated, current_B_calibrated);
+            i_ref_peak = i_ref * 1.414213562f;
+            Current_Controller_AlphaBeta_Update(i_ref_peak, current_A_calibrated, current_B_calibrated);
             
             // 2. 限制三相调制信号
             float mod_A = _fsat(Modulation.Ma, 1.0f, -1.0f);
@@ -319,23 +325,23 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
 
         case CONTROL_MODE_VOLTAGE:
         case CONTROL_MODE_MANUAL:
-        default: 
+        default:
             {
-                float final_modulation_ratio = (control_mode == CONTROL_MODE_VOLTAGE) ? pi_modulation_output : modulation_ratio;
-                final_modulation_ratio = _fsat(final_modulation_ratio, 1.0f, 0.0f);
+                float final_mod_ratio = (ctrl_mode == CONTROL_MODE_VOLTAGE) ? mod_output : modulation_ratio;
+                final_mod_ratio = _fsat(final_mod_ratio, 1.0f, 0.0f);
                 // 获取相位信息
                 float cos_theta = g_sogi_qsg.cos_theta;
                 float sin_theta = g_sogi_qsg.sin_theta;
-                
+
                 // 三相SPWM生成 (相位差120°)
                 float cos_theta_A = cos_theta;                                               // A相: cos(θ)
                 float cos_theta_B = cos_theta * (-0.5f) + sin_theta * (0.866025f);           // B相: cos(θ-120°)
                 float cos_theta_C = cos_theta * (-0.5f) - sin_theta * (0.866025f);           // C相: cos(θ+120°)
 
                 // 计算三相PWM占空比
-                duty_A_float = ((cos_theta_A + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_modulation_ratio;
-                duty_B_float = ((cos_theta_B + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_modulation_ratio;
-                duty_C_float = ((cos_theta_C + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_modulation_ratio;
+                duty_A_float = ((cos_theta_A + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_mod_ratio;
+                duty_B_float = ((cos_theta_B + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_mod_ratio;
+                duty_C_float = ((cos_theta_C + 1.0f) * 0.5f) * PWM_PERIOD_TIM8 * final_mod_ratio;
             }
             break;
     }
@@ -500,11 +506,11 @@ void key_proc(void)
                         break;
                     case PAGE_CV:
                         // CV模式：增加电压参考值
-                        Set_Voltage_Reference(voltage_reference + 1.0f);
+                        Set_Voltage_Reference(v_ref + 1.0f);
                         break;
                     case PAGE_CC:
                         // CC模式：增加电流参考值
-                        Set_Current_Reference(current_reference + 0.1f);
+                        Set_Current_Reference(i_ref + 0.1f);
                         break;
                     case PAGE_FREQ:
                         // 频率调节页面：增加频率
@@ -529,11 +535,11 @@ void key_proc(void)
                         break;
                     case PAGE_CV:
                         // CV模式：减少电压参考值
-                        Set_Voltage_Reference(voltage_reference - 1.0f);
+                        Set_Voltage_Reference(v_ref - 1.0f);
                         break;
                     case PAGE_CC:
                         // CC模式：减少电流参考值
-                        Set_Current_Reference(current_reference - 0.1f);
+                        Set_Current_Reference(i_ref - 0.1f);
                         break;
                     case PAGE_FREQ:
                         // 频率调节页面：减少频率
@@ -586,7 +592,7 @@ void key_proc(void)
                         Set_Control_Mode(CONTROL_MODE_MANUAL);
                         break;
                 }
-                user_regulator_info("Page: %d, Mode: %s", current_page, Get_Control_Mode_Name(control_mode));
+                user_regulator_info("Page: %d, Mode: %s", current_page, Get_Control_Mode_Name(ctrl_mode));
                 break;
 
             default:
@@ -643,7 +649,7 @@ void Display_Freq_Mode_Page(void)
 
     // 频率调节页面显示
     OLED_Println(OLED_6X8, "FREQ PWM:%s", pwm_enabled ? "ON" : "OFF");
-    OLED_Println(OLED_6X8, "Freq:%.1fHz", variable_freq);
+    OLED_Println(OLED_6X8, "Freq:%3dHz", variable_freq);
     OLED_Println(OLED_6X8, "Mod:%.1f%% (Open Loop)", modulation_ratio * 100.0f);
     OLED_Println(OLED_6X8, "V_AB:%.2fV V_BC:%.2fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
     OLED_Println(OLED_6X8, "I_A:%.2fA I_B:%.2fA", ac_current_rms_A, ac_current_rms_B);
@@ -675,8 +681,8 @@ void Display_CV_Mode_Page(void)
 
     // 统一使用小字体，可以显示更多信息
     OLED_Println(OLED_6X8, "CV PWM:%s", pwm_enabled ? "ON" : "OFF");
-    OLED_Println(OLED_6X8, "Set:%.1fV Act:%.2fV", voltage_reference, ac_voltage_rms_AB);
-    OLED_Println(OLED_6X8, "Mod:%.1f%% (Auto)", pi_modulation_output * 100.0f);
+    OLED_Println(OLED_6X8, "Set:%.1fV Act:%.2fV", v_ref, ac_voltage_rms_AB);
+    OLED_Println(OLED_6X8, "Mod:%.1f%% (Auto)", mod_output * 100.0f);
     OLED_Println(OLED_6X8, "I_A:%.2fA I_B:%.2fA", ac_current_rms_A, ac_current_rms_B);
     OLED_Println(OLED_6X8, "AB:%.2fV BC:%.2fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
     OLED_Println(OLED_6X8, "Freq:%.1fHz (Fixed)", variable_freq);
@@ -692,8 +698,8 @@ void Display_CC_Mode_Page(void)
 
     // 统一使用小字体，可以显示更多信息
     OLED_Println(OLED_6X8, "CC Mode PWM:%s", pwm_enabled ? "ON" : "OFF");
-    OLED_Println(OLED_6X8, "Set:%.2fA Act:%.2fA", current_reference, ac_current_rms_A);
-    OLED_Println(OLED_6X8, "Mod:%.1f%% (Auto)", pi_modulation_output * 100.0f);
+    OLED_Println(OLED_6X8, "Set:%.2fA Act:%.2fA", i_ref, ac_current_rms_A);
+    OLED_Println(OLED_6X8, "Mod:%.1f%% (Auto)", mod_output * 100.0f);
     OLED_Println(OLED_6X8, "A:%.2fA B:%.2fA", ac_current_rms_A, ac_current_rms_B);
     OLED_Println(OLED_6X8, "AB:%.1fV BC:%.1fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
     OLED_Println(OLED_6X8, "Freq: %.1fHz (Fixed)", variable_freq);
@@ -809,8 +815,12 @@ void PI_Controller_Init(PI_Controller_t* pi, float kp, float ki, float output_mi
 }
 void Dual_Loop_Control_Init(void)
 {
-    // 初始化电压外环PI控制器 (慢环, 100Hz)
-    PI_Controller_Init(&voltage_pi, PI_KP_VOLTAGE, PI_KI_VOLTAGE, PI_V_OUT_MIN, PI_V_OUT_MAX);
+    // 初始化归一化电压外环PI控制器 (慢环, 50Hz)
+    Voltage_PI_Norm_Init(&voltage_pi_norm, PI_KP_V_NORM, PI_KI_V_NORM,
+                        PI_V_OUT_MIN, PI_V_OUT_MAX, V_DC_NOMINAL);
+
+    // 初始化传统电压PI控制器 (保留兼容性)
+    PI_Controller_Init(&voltage_pi, 0.03f, 0.012f, PI_V_OUT_MIN, PI_V_OUT_MAX);
 
     // 初始化电流内环PI控制器 (快环, 20kHz瞬时值控制)
     // 注意：现在使用αβ坐标系控制器，这里保留传统PI控制器以备用
@@ -820,21 +830,21 @@ void Dual_Loop_Control_Init(void)
     Current_Controller_AlphaBeta_Init();
 
     // 设置默认控制模式
-    control_mode = CONTROL_MODE_MANUAL;
+    ctrl_mode = CONTROL_MODE_MANUAL;
 
     // 初始化参考值
-    voltage_reference = V_REF_DEFAULT;
-    current_reference = I_REF_DEFAULT;
-    current_reference_peak = 0.0f;
+    v_ref = V_REF_DEFAULT;
+    i_ref = I_REF_DEFAULT;
+    i_ref_peak = 0.0f;
 
     // 初始化输出
-    pi_modulation_output = 0.0f;
-    current_feedback_instant = 0.0f;
-    current_reference_instant = 0.0f;
+    mod_output = 0.0f;
+    i_fdbk_inst = 0.0f;
+    i_ref_inst = 0.0f;
 
     user_regulator_info("Dual Loop Control System Initialized");
     user_regulator_debug("Mode: %s, V_ref: %.1fV, I_ref: %.2fA",
-                        Get_Control_Mode_Name(control_mode), voltage_reference, current_reference);
+                        Get_Control_Mode_Name(ctrl_mode), v_ref, i_ref);
 }
 void PI_Controller_Reset(PI_Controller_t* pi)
 {
@@ -847,11 +857,14 @@ void Dual_Loop_Control_Reset(void)
     PI_Controller_Reset(&voltage_pi);
     PI_Controller_Reset(&current_pi);
 
+    // 复位归一化电压PI控制器
+    Voltage_PI_Norm_Reset(&voltage_pi_norm);
+
     // 复位输出
-    current_reference_peak = 0.0f;
-    pi_modulation_output = 0.0f;
-    current_feedback_instant = 0.0f;
-    current_reference_instant = 0.0f;
+    i_ref_peak = 0.0f;
+    mod_output = 0.0f;
+    i_fdbk_inst = 0.0f;
+    i_ref_inst = 0.0f;
 
     // 复位αβ坐标系电流控制器
     Current_Controller_AlphaBeta_Reset();
@@ -864,8 +877,8 @@ void Set_Control_Mode(Control_Mode_t mode)
 {
     if (mode >= CONTROL_MODE_COUNT) return;
 
-    Control_Mode_t old_mode = control_mode;
-    control_mode = mode;
+    Control_Mode_t old_mode = ctrl_mode;
+    ctrl_mode = mode;
 
     // 模式切换时复位控制器，防止积分饱和
     if (old_mode != mode) {
@@ -879,11 +892,11 @@ void Set_Voltage_Reference(float voltage_ref)
 {
     // 限制电压参考值范围
     if (voltage_ref < 5.0f) voltage_ref = 5.0f;
-    if (voltage_ref > 25.0f) voltage_ref = 25.0f;
+    if (voltage_ref > 35.0f) voltage_ref = 35.0f;
 
-    voltage_reference = voltage_ref;
+    v_ref = voltage_ref;
 
-    user_regulator_debug("Voltage Reference: %.1fV", voltage_reference);
+    user_regulator_debug("Voltage Reference: %.1fV", v_ref);
 }
 void Set_Current_Reference(float current_ref)
 {
@@ -891,9 +904,9 @@ void Set_Current_Reference(float current_ref)
     if (current_ref < 0.1f) current_ref = 0.1f;
     if (current_ref > 5.0f) current_ref = 2.5f;
 
-    current_reference = current_ref;
+    i_ref = current_ref;
 
-    user_regulator_debug("Current Reference: %.2fA", current_reference);
+    user_regulator_debug("Current Reference: %.2fA", i_ref);
 }
 void Set_Reference_Signal(Reference_Signal_t signal_type)
 {
@@ -928,6 +941,134 @@ const char* Get_State_Name(System_State_t state)
         default:                return "UNKNOWN";
     }
 }
+// ============================================================================
+// 归一化电压PI控制器实现 - 适应不同直流母线电压
+// ============================================================================
+
+/**
+ * @brief 初始化归一化电压PI控制器
+ * @param pi: 归一化PI控制器指针
+ * @param kp_norm: 归一化比例增益 (基于标称电压整定)
+ * @param ki_norm: 归一化积分增益 (基于标称电压整定)
+ * @param output_min: 输出最小值
+ * @param output_max: 输出最大值
+ * @param v_dc_nominal: 标称直流母线电压 (归一化基准)
+ */
+void Voltage_PI_Norm_Init(Voltage_PI_Norm_t* pi, float kp_norm, float ki_norm,
+                         float output_min, float output_max, float v_dc_nominal)
+{
+    pi->kp_norm = kp_norm;
+    pi->ki_norm = ki_norm;
+    pi->output = 0.0f;
+    pi->output_max = output_max;
+    pi->output_min = output_min;
+    pi->last_error_norm = 0.0f;
+    pi->v_dc_actual = v_dc_nominal;      // 初始化为标称值
+    pi->v_dc_nominal = v_dc_nominal;
+}
+
+/**
+ * @brief 复位归一化电压PI控制器
+ * @param pi: 归一化PI控制器指针
+ */
+void Voltage_PI_Norm_Reset(Voltage_PI_Norm_t* pi)
+{
+    pi->output = 0.0f;
+    pi->last_error_norm = 0.0f;
+}
+
+/**
+ * @brief 更新归一化电压PI控制器
+ * @param pi: 归一化PI控制器指针
+ * @param v_ref: 电压参考值 (RMS)
+ * @param v_feedback: 电压反馈值 (RMS)
+ * @param v_dc_actual: 当前实际直流母线电压
+ * @return: 归一化调制比输出 (0-1)
+ *
+ * 归一化原理：
+ * 1. 将电压误差归一化到标称直流母线电压
+ * 2. PI参数基于标称电压整定，自动适应不同直流母线电压
+ * 3. 输出调制比自动补偿直流母线电压变化
+ */
+float Voltage_PI_Norm_Update(Voltage_PI_Norm_t* pi, float v_ref, float v_feedback, float v_dc_actual)
+{
+    // 更新当前直流母线电压
+    pi->v_dc_actual = _fsat(v_dc_actual, V_DC_MAX, V_DC_MIN);
+
+    // 计算电压误差
+    float error = v_ref - v_feedback;
+
+    // 归一化误差：将误差归一化到标称直流母线电压
+    // 这样PI参数就具有了电压无关性
+    float error_norm = error / pi->v_dc_nominal;
+
+    // 增量式PI控制器计算
+    float p_term = pi->kp_norm * (error_norm - pi->last_error_norm);
+    float i_term = pi->ki_norm * error_norm;
+    float delta_output = p_term + i_term;
+
+    // 限制输出变化率，防止突变
+    const float max_change = 0.02f;  // 每次最大变化2%
+    delta_output = _fsat(delta_output, max_change, -max_change);
+
+    // 累加输出
+    float new_output = pi->output + delta_output;
+
+    // 直流母线电压补偿：调制比需要根据实际直流母线电压进行补偿
+    // 当直流母线电压高于标称值时，需要更小的调制比产生相同的输出电压
+    float voltage_compensation = pi->v_dc_nominal / pi->v_dc_actual;
+    new_output *= voltage_compensation;
+
+    // 输出限幅和抗积分饱和
+    if (new_output > pi->output_max) {
+        pi->output = pi->output_max;
+        // 抗积分饱和：如果输出饱和且积分项还在增大，则不更新历史误差
+        if (i_term > 0) {
+            pi->last_error_norm = error_norm;
+            return pi->output;
+        }
+    } else if (new_output < pi->output_min) {
+        pi->output = pi->output_min;
+        if (i_term < 0) {
+            pi->last_error_norm = error_norm;
+            return pi->output;
+        }
+    } else {
+        pi->output = new_output;
+    }
+
+    // 更新历史误差
+    pi->last_error_norm = error_norm;
+
+    return pi->output;
+}
+
+// ============================================================================
+// 归一化PI控制器测试函数 (可选，用于验证)
+// ============================================================================
+/**
+ * @brief 测试归一化PI控制器在不同直流母线电压下的表现
+ * @note 此函数仅用于开发测试，实际应用中可删除
+ */
+void Test_Voltage_PI_Normalization(void)
+{
+    // 测试场景：相同的电压误差，不同的直流母线电压
+    float v_ref_test = 15.0f;      // 参考电压15V
+    float v_feedback_test = 12.0f; // 反馈电压12V (误差3V)
+
+    // 测试30V直流母线电压 (标称值)
+    float mod_30v = Voltage_PI_Norm_Update(&voltage_pi_norm, v_ref_test, v_feedback_test, 30.0f);
+
+    // 测试60V直流母线电压 (2倍标称值)
+    float mod_60v = Voltage_PI_Norm_Update(&voltage_pi_norm, v_ref_test, v_feedback_test, 60.0f);
+
+    // 理论上：mod_60v 应该约等于 mod_30v * 0.5
+    // 因为60V直流母线只需要一半的调制比就能产生相同的输出电压
+
+    user_regulator_debug("Norm PI Test: 30V->%.3f, 60V->%.3f, Ratio:%.3f",
+                        mod_30v, mod_60v, mod_60v/mod_30v);
+}
+
 // ============================================================================
 // DC系数保存
 //     const float adc2_in3_val = (float)adc2_in3_raw * 3.3f / 4096.0f;
