@@ -42,14 +42,20 @@ volatile float i_ref_inst = 0.0f;          // 瞬时电流参考值 (20kHz)
 volatile float mod_output = 0.0f;          // 最终调制比输出
 volatile float i_fdbk_inst = 0.0f;         // 瞬时电流反馈值
 
+// 新增直流量采集变量 (暂时只采集，不处理)
+volatile float dc_current_raw = 0.0f;      // 整流电路输出直流电流 (原始ADC值)
+volatile float dc_voltage_raw = 0.0f;      // 整流电路输出直流电压 (原始ADC值)
+volatile float bus_voltage_raw = 0.0f;     // 直流母线电压 (原始ADC值)
+
 // αβ坐标系电流控制器实例
 Current_Controller_AlphaBeta_t CurrConReg;
 Modulation_t Modulation;
 // ============================================================================
-// ADC数据缓冲区 (修改为DMA长度=2的结构)
+// ADC数据缓冲区 (外部定义)
 // ============================================================================
-extern uint16_t adc_ac_buf[4];              // AC环路缓冲区 (在main.c中定义，DMA长度=2)
-extern uint16_t adc3_reference_buf[1];      // ADC3参考信号缓冲区 (在main.c中定义)
+extern uint16_t adc1_buf[4];                // ADC1缓冲区: [IN1, IN2, IN3, IN4] (在main.c中定义)
+extern uint16_t adc2_buf[2];                // ADC2缓冲区: [IN3, IN4] (在main.c中定义)
+extern uint16_t adc3_buf[1];                // ADC3缓冲区: [IN1] (在main.c中定义)
 
 // ============================================================================
 volatile float reference_frequency = 50.0f;  // 参考信号频率（固定值）
@@ -111,25 +117,21 @@ void user_regulator_init(void)
     HAL_ADCEx_Calibration_Start(&hadc3, ADC_SINGLE_ENDED);  // 新增：ADC3校准
 
     // 启动ADC DMA
-    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_ac_buf, 2);   // DMA长度改为2
-    HAL_ADC_Start_DMA(&hadc2, (uint32_t*)&adc_ac_buf[2], 2);   //
-    HAL_ADC_Start_DMA(&hadc3, (uint32_t*)adc3_reference_buf, 1);  //
+    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc1_buf, 4);     // ADC1: 4个通道 [IN1, IN2, IN3, IN4]
+    HAL_ADC_Start_DMA(&hadc2, (uint32_t*)adc2_buf, 2);     // ADC2: 2个通道 [IN3, IN4]
+    HAL_ADC_Start_DMA(&hadc3, (uint32_t*)adc3_buf, 1);     // ADC3: 1个通道 [IN1]
 
     //HAL_DAC_Start(&hdac2, DAC_CHANNEL_1);       // 启动DAC2通道1 (PA6)
     //HAL_DAC_SetValue(&hdac2, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_value);
-
     OLED_Init();
     OLED_Clear();
     OLED_ShowString(0, 0, "Init", OLED_8X16);
     OLED_Update();
     variable_freq = 50.0f;  // 初始化为50Hz
-
     key_init();
-
     // 初始化PWM控制变量
     modulation_ratio = 0.0f;  // 从较小的值开始，安全起见
     pwm_enabled = 0;          // 初始状态PWM关闭
-
     // 初始化AC采样累加器
     current_A_sum = 0.0f;
     current_B_sum = 0.0f;
@@ -142,10 +144,10 @@ void user_regulator_init(void)
     // 初始化SOGI复合滤波器
     SOGICompositeFilter_Init(&sogi_filter_ia,
                             SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ,
-                            SOGI_DAMPING_FACTOR, 0.026f, 0.1f, 0.0f);
+                            SOGI_DAMPING_FACTOR, 0.026f, 1.0f, 0.0f);
     SOGICompositeFilter_Init(&sogi_filter_ib,
                             SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ,
-                            SOGI_DAMPING_FACTOR, 0.026f, 0.1f, 0.0f);
+                            SOGI_DAMPING_FACTOR, 0.026f, 1.0f, 0.0f);
     SOGICompositeFilter_Init(&sogi_filter_vab,
                             SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ,
                             SOGI_DAMPING_FACTOR, 0.026f, 0.1f, 0.0f);
@@ -164,7 +166,7 @@ void user_regulator_main(void)
     // 1. 处理按键输入
     key_proc();
     // 2. 更新显示
-    Update_Disp();
+    Update_Disp(); 
 }
 // ============================================================================
 // ADC转换完成回调函数接口
@@ -197,38 +199,21 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         return; // 等待所有ADC完成
     }
     adc_completion_mask = 0; // 重置掩码，为下个周期做准备
-
     // --- Part 2.1: ADC数据处理 - 分别计算用于控制和RMS的值 ---
-
     // 基础转换值（偏置补偿 + ADC转换增益）
-    float current_A_base = ((int16_t)adc_ac_buf[0] - IacOffset_A) * MeasureGain;
-    float voltage_AB_base = ((int16_t)adc_ac_buf[1] - VacOffset_AB) * MeasureGain;
-    float current_B_base = ((int16_t)adc_ac_buf[2] - IacOffset_B) * MeasureGain;
-    float voltage_BC_base = ((int16_t)adc_ac_buf[3] - VacOffset_BC) * MeasureGain;
+    // ADC1数据: [IN1, IN2, IN3, IN4] = [IA, VAB, DC_I, DC_V]
+    // ADC2数据: [IN3, IN4] = [IB, VBC]
+    float current_A_base = ((int16_t)adc1_buf[0] - IacOffset_A) * MeasureGain;     // ADC1_IN1: IA
+    float voltage_AB_base = ((int16_t)adc1_buf[1] - VacOffset_AB) * MeasureGain;   // ADC1_IN2: VAB
+    float current_B_base = ((int16_t)adc2_buf[0] - IacOffset_B) * MeasureGain;     // ADC2_IN3: IB
+    float voltage_BC_base = ((int16_t)adc2_buf[1] - VacOffset_BC) * MeasureGain;   // ADC2_IN4: VBC
 
-    // // 限幅滤波器：限制变化幅度，平滑信号
-    // static float current_A_last = 0.0f;
-    // static float current_B_last = 0.0f;
-    // static float voltage_AB_last = 0.0f;
-    // static float voltage_BC_last = 0.0f;
-    // static uint8_t filter_initialized = 0;
+    // 新增的直流量采集（暂时不处理，只采集到全局变量）
+    dc_current_raw = (float)adc1_buf[2];        // ADC1_IN3: 整流电路输出直流电流
+    dc_voltage_raw = (float)adc1_buf[3];        // ADC1_IN4: 整流电路输出直流电压
+    bus_voltage_raw = (float)adc3_buf[0];       // ADC3_IN1: 直流母线电压
 
-    // // 首次运行时初始化滤波器
-    // if (!filter_initialized) {
-    //     current_A_last = IacOffset_A * MeasureGain;
-    //     current_B_last = IacOffset_B * MeasureGain;
-    //     voltage_AB_last = VacOffset_AB * MeasureGain;
-    //     voltage_BC_last = VacOffset_BC * MeasureGain;
-    //     filter_initialized = 1;
-    // }
-
-    // // 应用限幅滤波器 - 使用data_process.c中的Limit_Filter函数
-    // const float MAX_CHANGE = 0.026f;//sin(0.45)/3.3=0.02591
-    // float current_A_filtered = Limit_Filter(current_A_base, &current_A_last, MAX_CHANGE);
-    // float current_B_filtered = Limit_Filter(current_B_base, &current_B_last, MAX_CHANGE);
-    // float voltage_AB_filtered = Limit_Filter(voltage_AB_base, &voltage_AB_last, MAX_CHANGE);
-    // float voltage_BC_filtered = Limit_Filter(voltage_BC_base, &voltage_BC_last, MAX_CHANGE);
-    //使用SOGI复合滤波器
+    // 恢复：V_I模式也使用SOGI滤波器，确保相位信息准确
     float current_A_filtered = SOGICompositeFilter_Update(&sogi_filter_ia, current_A_base);
     float current_B_filtered = SOGICompositeFilter_Update(&sogi_filter_ib, current_B_base);
     float voltage_AB_filtered = SOGICompositeFilter_Update(&sogi_filter_vab, voltage_AB_base);
@@ -251,14 +236,12 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     if (slow_loop_counter >= AC_SAMPLE_SIZE)
     {
         slow_loop_counter = 0; // 计数器清零
-
         // 1. 计算RMS值，应用您标定的传递系数 - 添加数值保护
         // 确保累加器值为正数，避免负数开方
         float current_A_avg = fmaxf(current_A_sum / (float)AC_SAMPLE_SIZE, 0.0f);
         float voltage_AB_avg = fmaxf(voltage_AB_sum / (float)AC_SAMPLE_SIZE, 0.0f);
         float current_B_avg = fmaxf(current_B_sum / (float)AC_SAMPLE_SIZE, 0.0f);
         float voltage_BC_avg = fmaxf(voltage_BC_sum / (float)AC_SAMPLE_SIZE, 0.0f);
-
         ac_current_rms_A = sqrtf(current_A_avg) * 5.1778f - 0.0111f ;
         ac_voltage_rms_AB = sqrtf(voltage_AB_avg) * 68.011f - 0.1784f;//手动矫正0.1
         ac_current_rms_B = sqrtf(current_B_avg) * 5.1778f - 0.0111f;
@@ -272,26 +255,19 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         const float m_Vbc = 0.9921f; // 示例值：新的斜率
         const float c_Vbc = 0.2063f;
         ac_voltage_rms_BC = ac_voltage_rms_BC *m_Vbc + c_Vbc;
-        const float m_Ia = 1.0408f; // 示例值：新的斜率
-        const float c_Ia = 0.0023f; 
+        const float m_Ia = 0.9765; // 示例值：新的斜率
+        const float c_Ia = 0.0139f; 
         ac_current_rms_A = ac_current_rms_A * m_Ia + c_Ia;
-        const float m_Ib = 0.9825f; // 示例值：新的斜率
-        const float c_Ib = 0.0123f;
+        const float m_Ib = 0.9514f; // 示例值：新的斜率
+        const float c_Ib = 0.0155f;
         ac_current_rms_B = ac_current_rms_B * m_Ib + c_Ib;
         // 最终结果限制，避免异常值
         ac_current_rms_A = _fsat(ac_current_rms_A, 100.0f, 0.0f);
         ac_voltage_rms_AB = _fsat(ac_voltage_rms_AB, 1000.0f, 0.0f);
         ac_current_rms_B = _fsat(ac_current_rms_B, 100.0f, 0.0f);
         ac_voltage_rms_BC = _fsat(ac_voltage_rms_BC, 1000.0f, 0.0f);
-
-        
         // 2. 清空累加器
-        current_A_sum = 0.0f;
-        current_B_sum = 0.0f;
-        voltage_AB_sum = 0.0f;
-        voltage_BC_sum = 0.0f;
-        voltage_AC_sum = 0.0f;
-
+        current_A_sum = 0.0f;current_B_sum = 0.0f;voltage_AB_sum = 0.0f;voltage_BC_sum = 0.0f;voltage_AC_sum = 0.0f;
         // 3. 执行外环控制器 (电压环或电流环参考值更新)
         if (pwm_enabled) {
             switch (ctrl_mode) {
@@ -300,23 +276,29 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
                     // TODO: 实际应用中应通过ADC测量直流母线电压
                     // 示例: float v_dc_measured = ADC_Read_DC_Bus_Voltage();
                     float v_dc_actual = V_DC_NOMINAL;  // 临时使用标称值，实际应测量
-
                     mod_output = Voltage_PI_Norm_Update(&voltage_pi_norm, v_ref,
                                                        ac_voltage_rms_AB, v_dc_actual);
                     mod_output = _fsat(mod_output, PI_V_OUT_MAX, PI_V_OUT_MIN);
                     break;
                 case CONTROL_MODE_CURRENT:
                     // 更新调制比输出用于显示 (取三相调制信号的平均幅值)
-                    mod_output = Modulation.Ma;
+                    mod_output = Modulation.Ma;  // 取A相调制信号作为显示
+                    break;
+                case CONTROL_MODE_V_I_CTRL:
+                    // V_I分离控制模式：恒压控制器在50Hz更新
+                    // 电压控制器更新（用于逆变器TIM8 CH1-3恒压控制）
+                    float v_dc_actual_vi = V_DC_NOMINAL;  // 临时使用标称值，实际应测量
+                    mod_output = Voltage_PI_Norm_Update(&voltage_pi_norm, v_ref,
+                                                       ac_voltage_rms_AB, v_dc_actual_vi);
+                    mod_output = _fsat(mod_output, PI_V_OUT_MAX, PI_V_OUT_MIN);
+                    // 注意：电流控制器在20kHz快速环中更新（用于整流器恒流控制）
                     break;
                 case CONTROL_MODE_MANUAL:
                 default:
                     break;
             }
-
         }
     }
-
     // --- Part 2.3: 20kHz快速环 - 核心控制与PWM更新 (每次都执行) ---
     if (!pwm_enabled) {
         // PWM关闭时，清零所有PWM输出并返回
@@ -330,85 +312,170 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);  // C相 (PE11)
         return;
     }
-
     // 瞬时值传递系数应用（使用您标定的传递系数）
     float current_A_calibrated = current_A_filtered * 5.1778f - 0.0111f;
     float current_B_calibrated = current_B_filtered * 5.1778f - 0.0111f;
+    // const float m_Ia = 0.9765; // 示例值：新的斜率
+    // const float c_Ia = 0.0139f; 
+    // current_A_calibrated = current_A_calibrated * m_Ia + c_Ia;
+    // const float m_Ib = 0.9514f; // 示例值：新的斜率
+    // const float c_Ib = 0.0155f;
+    // current_B_calibrated = current_B_calibrated * m_Ib + c_Ib;
     // 根据控制模式计算三相PWM占空比
     float duty_A_float = 0.0f, duty_B_float = 0.0f, duty_C_float = 0.0f;
+    // V_I_CTRL模式需要分别计算逆变器和整流器的占空比
+    float duty_A_rect = 0.0f, duty_B_rect = 0.0f, duty_C_rect = 0.0f;
     switch (ctrl_mode) {
         case CONTROL_MODE_CURRENT:
-            i_ref_peak = i_ref * 1.414213562f;
-            Current_Controller_AlphaBeta_Update(i_ref_peak, current_A_calibrated, current_B_calibrated);
-            
-            // 2. 限制三相调制信号
-            float mod_A = _fsat(Modulation.Ma, 1.0f, -1.0f);
-            float mod_B = _fsat(Modulation.Mb, 1.0f, -1.0f);
-            float mod_C = _fsat(Modulation.Mc, 1.0f, -1.0f);
-
-            // 3. 计算三相PWM占空比 (调制信号转换为占空比)
-            // 修正：αβ控制器输出的调制信号范围是[-1,1]，需要转换为[0,1]再乘以PWM周期
-            duty_A_float = ((mod_A + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
-            duty_B_float = ((mod_B + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
-            duty_C_float = ((mod_C + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
-            break;
-
-        case CONTROL_MODE_VOLTAGE:
-        case CONTROL_MODE_MANUAL:
-        default:
             {
-                float final_mod_ratio = (ctrl_mode == CONTROL_MODE_VOLTAGE) ? mod_output : modulation_ratio;
+                // 恒流控制：使用αβ坐标系电流控制器，但输出标准SPWM
+                i_ref_peak = i_ref * 1.414213562f;
+                Current_Controller_AlphaBeta_Update(i_ref_peak, current_A_calibrated, current_B_calibrated);
 
-                // 关键点1: 放开调制比上限到 1.1547f，即 2/sqrt(3)，实现SVPWM电压利用率
-                // SVPWM原理：通过注入三次谐波等共模分量，提高直流母线电压利用率约15.5%
-                // 从标准SPWM的0.866*Vdc提升到1.0*Vdc，线电压RMS可达Vdc/√2
-                final_mod_ratio = _fsat(final_mod_ratio, 1.1547f, 0.0f);
+                // 限制三相调制信号
+                float mod_A = _fsat(Modulation.Ma, 1.0f, -1.0f);
+                float mod_B = _fsat(Modulation.Mb, 1.0f, -1.0f);
+                float mod_C = _fsat(Modulation.Mc, 1.0f, -1.0f);
+
+                // 计算PWM占空比（标准SPWM）
+                duty_A_float = ((mod_A + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
+                duty_B_float = ((mod_B + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
+                duty_C_float = ((mod_C + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
+            }
+            break;
+        case CONTROL_MODE_V_I_CTRL:
+            {
+                // V_I分离控制模式：逆变器恒压，整流器恒流（保持闭环控制）
+
+                // 1. 逆变器恒压控制 (TIM8 CH1-3)：使用电压PI控制器输出
+                float final_mod_ratio_inv = _fsat(mod_output, 1.0f, 0.0f);
 
                 // 获取相位信息
                 float cos_theta = g_sogi_qsg.cos_theta;
                 float sin_theta = g_sogi_qsg.sin_theta;
 
-                // 步骤1: 生成原始的三相调制信号 (范围: [-final_mod_ratio, +final_mod_ratio])
-                float u_a = final_mod_ratio * (cos_theta);                                       // A相: m*cos(θ)
-                float u_b = final_mod_ratio * (cos_theta * (-0.5f) + sin_theta * (0.866025f));  // B相: m*cos(θ-120°)
-                float u_c = final_mod_ratio * (cos_theta * (-0.5f) - sin_theta * (0.866025f));  // C相: m*cos(θ+120°)
+                // 标准SPWM三相调制信号生成（逆变器）
+                float mod_A_inv = final_mod_ratio_inv * cos_theta;
+                float mod_B_inv = final_mod_ratio_inv * (cos_theta * (-0.5f) + sin_theta * (0.866025f));
+                float mod_C_inv = final_mod_ratio_inv * (cos_theta * (-0.5f) - sin_theta * (0.866025f));
 
-                // 步骤2: 找出三相调制信号的瞬时最大值和最小值 (Min-Max法)
-                float u_max = fmaxf(u_a, fmaxf(u_b, u_c));
-                float u_min = fminf(u_a, fminf(u_b, u_c));
+                // 计算逆变器PWM占空比
+                duty_A_float = (mod_A_inv + 1.0f) * 0.5f * PWM_PERIOD_TIM8;
+                duty_B_float = (mod_B_inv + 1.0f) * 0.5f * PWM_PERIOD_TIM8;
+                duty_C_float = (mod_C_inv + 1.0f) * 0.5f * PWM_PERIOD_TIM8;
 
-                // 步骤3: 计算需要注入的共模电压偏置 (三次谐波注入的等效实现)
-                float u_offset = -0.5f * (u_max + u_min);
+                // 2. 整流器恒流控制 (TIM8 CH4 + TIM1 CH1/CH2)：使用电流控制器
+                // 恢复20kHz更新频率，提高响应速度
+                i_ref_peak = i_ref * 1.414213562f;
+                Current_Controller_AlphaBeta_Update(i_ref_peak, current_A_calibrated, current_B_calibrated);
 
-                // 步骤4: 将偏置注入三相，得到新的调制信号 (范围被钳位在 [-1, 1] 区间内)
-                float mod_A = u_a + u_offset;
-                float mod_B = u_b + u_offset;
-                float mod_C = u_c + u_offset;
+                // 使用电流控制器输出的调制信号
+                float mod_A_rect = _fsat(Modulation.Ma, 1.0f, -1.0f);
+                float mod_B_rect = _fsat(Modulation.Mb, 1.0f, -1.0f);
+                float mod_C_rect = _fsat(Modulation.Mc, 1.0f, -1.0f);
 
-                // 步骤5: 基于新的调制信号计算PWM占空比
-                // (mod_A/B/C + 1.0f) * 0.5f 将 [-1, 1] 的调制信号映射到 [0, 1] 的占空比系数
+                // 计算整流器PWM占空比
+                duty_A_rect = ((mod_A_rect + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
+                duty_B_rect = ((mod_B_rect + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
+                duty_C_rect = ((mod_C_rect + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
+            }
+            break;
+        case CONTROL_MODE_VOLTAGE:
+        case CONTROL_MODE_MANUAL:
+        default:
+            {
+                float final_mod_ratio = (ctrl_mode == CONTROL_MODE_VOLTAGE) ? mod_output : modulation_ratio;
+                final_mod_ratio = _fsat(final_mod_ratio, 1.0f, 0.0f);  // 限制到标准SPWM范围
+
+                // 获取相位信息
+                float cos_theta = g_sogi_qsg.cos_theta;
+                float sin_theta = g_sogi_qsg.sin_theta;
+
+                // 标准SPWM三相调制信号生成
+                float mod_A = final_mod_ratio * cos_theta;
+                float mod_B = final_mod_ratio * (cos_theta * (-0.5f) + sin_theta * (0.866025f));
+                float mod_C = final_mod_ratio * (cos_theta * (-0.5f) - sin_theta * (0.866025f));
+
+                // 计算PWM占空比
                 duty_A_float = (mod_A + 1.0f) * 0.5f * PWM_PERIOD_TIM8;
                 duty_B_float = (mod_B + 1.0f) * 0.5f * PWM_PERIOD_TIM8;
                 duty_C_float = (mod_C + 1.0f) * 0.5f * PWM_PERIOD_TIM8;
             }
             break;
     }
-
-    // 统一进行边界检查和PWM设置
+    // 统一进行边界检查
     uint32_t duty_cycle_A = (uint32_t)_fsat(duty_A_float, PWM_PERIOD_TIM8, 0.0f);
     uint32_t duty_cycle_B = (uint32_t)_fsat(duty_B_float, PWM_PERIOD_TIM8, 0.0f);
     uint32_t duty_cycle_C = (uint32_t)_fsat(duty_C_float, PWM_PERIOD_TIM8, 0.0f);
 
-    // 同时设置逆变器和整流器PWM输出（同步运行）
-    // 逆变器输出 (TIM8 CH1/CH2/CH3)
-    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty_cycle_A);  // A相
-    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);  // B相
-    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
+    // V_I模式需要单独处理整流器占空比
+    uint32_t duty_cycle_A_rect = 0, duty_cycle_B_rect = 0, duty_cycle_C_rect = 0;
+    if (ctrl_mode == CONTROL_MODE_V_I_CTRL) {
+        duty_cycle_A_rect = (uint32_t)_fsat(duty_A_rect, PWM_PERIOD_TIM8, 0.0f);
+        duty_cycle_B_rect = (uint32_t)_fsat(duty_B_rect, PWM_PERIOD_TIM8, 0.0f);
+        duty_cycle_C_rect = (uint32_t)_fsat(duty_C_rect, PWM_PERIOD_TIM8, 0.0f);
+    }
 
-    // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 与逆变器同步
-    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_A);  // A相 (PC9)
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_B);  // B相 (PE9)
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_C);  // C相 (PE11)
+    // 根据控制模式设置PWM输出
+    switch (ctrl_mode) {
+        case CONTROL_MODE_MANUAL:
+            // 开环模式：都输出，相序相反
+            // 逆变器输出 (TIM8 CH1/CH2/CH3)
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty_cycle_A);  // A相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);  // B相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
+            // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 相序相反
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_C);  // C相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_B);  // B相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_A);  // A相
+            break;
+
+        case CONTROL_MODE_VOLTAGE:
+            // 电压闭环：只输出逆变器，相序相反
+            // 逆变器输出 (TIM8 CH1/CH2/CH3)
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty_cycle_A);  // A相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);  // B相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
+            // 整流器输出关闭
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, 0);
+            break;
+
+        case CONTROL_MODE_CURRENT:
+            // 电流闭环：只输出整流器，相序相反
+            // 逆变器输出关闭
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, 0);
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
+            // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 相序相反
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_C);  // C相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_B);  // B相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_A);  // A相
+            break;
+
+        case CONTROL_MODE_V_I_CTRL:
+            // V_I模式：都输出，使用各自的控制器输出，相序相反
+            // 逆变器输出 (TIM8 CH1/CH2/CH3) - 恒压控制
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty_cycle_A);  // A相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);  // B相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
+            // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 恒流控制，相序相反
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_C_rect);  // C相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_B_rect);  // B相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_A_rect);  // A相
+            break;
+
+        default:
+            // 默认关闭所有输出
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, 0);
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, 0);
+            break;
+    }
 }
 // ============================================================================
 // 增量式PI控制器更新函数
@@ -473,9 +540,8 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
     float current_C = -(current_A + current_B);
 
     // 步骤1: Clarke变换 - 将三相电流反馈转换到αβ坐标系
-    // α = (2/3)*Ia - (1/3)*Ib - (1/3)*Ic
+    // α = (2/3)*Ia - (1/3)*Ib - (1/3)*Ic β = (1/√3)*(Ib - Ic)
     float F32alpha = current_A * 0.6666666667f - current_B * 0.3333333334f - current_C * 0.3333333334f;
-    // β = (1/√3)*(Ib - Ic)
     float F32beta = (current_B - current_C) * 0.57735026918963f;
 
     // 步骤2: 生成三相电流指令 (基于锁相环的sin/cos值)
@@ -487,11 +553,9 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
     CurrConReg.Ic_CMD = Ia_CMD * (g_sogi_qsg.cos_theta * (-0.5f) - g_sogi_qsg.sin_theta * (0.8660254f));
     
     // 步骤3: Clarke变换 - 将三相电流指令转换到αβ坐标系
-    // Valpha_CMD = (2/3)*Ia_CMD - (1/3)*Ib_CMD - (1/3)*Ic_CMD
+    // Valpha_CMD = (2/3)*Ia_CMD - (1/3)*Ib_CMD - (1/3)*Ic_CMD Vbeta_CMD = (1/√3)*(Ib_CMD - Ic_CMD)
     CurrConReg.Valpha_CMD = CurrConReg.Ia_CMD * 0.6666666667f - (CurrConReg.Ib_CMD + CurrConReg.Ic_CMD) * 0.3333333334f;
-    // Vbeta_CMD = (1/√3)*(Ib_CMD - Ic_CMD)
     CurrConReg.Vbeta_CMD  = (CurrConReg.Ib_CMD - CurrConReg.Ic_CMD) * 0.57735026918963f;
-
 
     // 步骤4: 计算α轴误差并更新PI控制器
     CurrConReg.Error_alpha = CurrConReg.Valpha_CMD - F32alpha;
@@ -521,11 +585,9 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
     CurrConReg.feedforward_c = 0.0f;
 
     // 步骤7: 反Clarke变换 - 将αβ坐标系输出转换回三相调制信号
-    // Ma = V_alpha
+    // Ma = V_alpha Mb = -0.5 * V_alpha + (√3/2) * V_beta Mc = -0.5 * V_alpha - (√3/2) * V_beta
     Modulation.Ma = CurrConReg.PI_Out_alpha + CurrConReg.feedforward_a;
-    // Mb = -0.5 * V_alpha + (√3/2) * V_beta
-    Modulation.Mb = -0.5f * CurrConReg.PI_Out_alpha + 0.8660254038f * CurrConReg.PI_Out_Beta + CurrConReg.feedforward_b;
-    // Mc = -0.5 * V_alpha - (√3/2) * V_beta
+    Modulation.Mb = -0.5f * CurrConReg.PI_Out_alpha + 0.8660254038f * CurrConReg.PI_Out_Beta + CurrConReg.feedforward_b; 
     Modulation.Mc = -0.5f * CurrConReg.PI_Out_alpha - 0.8660254038f * CurrConReg.PI_Out_Beta + CurrConReg.feedforward_c;
     
     // 调试输出 (可选)
@@ -546,16 +608,52 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
 // ============================================================================
 void key_proc(void)
 {
+    // 长按检测变量
+    static uint32_t key4_press_start_time = 0;
+    static uint8_t key4_long_press_processed = 0;
+
     const key_result_t key_result = key_scan();
+
+    // 检测KEY4长按（在V_I模式下）
+    if (current_page == PAGE_V_I) {
+        uint8_t key4_current_state = key_read_raw(KEY4);
+        uint32_t current_time = HAL_GetTick();
+
+        if (key4_current_state && key4_press_start_time == 0) {
+            // KEY4刚按下，记录时间
+            key4_press_start_time = current_time;
+            key4_long_press_processed = 0;
+        } else if (key4_current_state && key4_press_start_time > 0) {
+            // KEY4持续按下，检查是否达到长按时间（2秒）
+            if (!key4_long_press_processed &&
+                (current_time - key4_press_start_time) >= 2000) {
+                // 长按2秒，进入MANUAL模式
+                current_page = PAGE_MANUAL;
+                Set_Control_Mode(CONTROL_MODE_MANUAL);
+                key4_long_press_processed = 1;
+                key4_press_start_time = 0;
+                return; // 直接返回，不处理短按
+            }
+        } else if (!key4_current_state && key4_press_start_time > 0) {
+            // KEY4释放
+            if (!key4_long_press_processed &&
+                (current_time - key4_press_start_time) < 2000) {
+                // 短按，处理PWM开关（在下面的switch中处理）
+            }
+            key4_press_start_time = 0;
+            key4_long_press_processed = 0;
+        }
+    }
+
     if (key_result.key_state == KEY_PRESS){
         switch (key_result.key_num) {
             case KEY1:  // 参数增加 (+)
                 switch (current_page) {
                     case PAGE_MANUAL:
-                        // 手动模式：增加调制比 (支持SVPWM范围到1.15)
-                        if (modulation_ratio < 1.15f) {
+                        // 手动模式：增加调制比 (标准SPWM范围到1.0)
+                        if (modulation_ratio < 1.0f) {
                             modulation_ratio += 0.05f;
-                            if (modulation_ratio > 1.15f) modulation_ratio = 1.15f;
+                            if (modulation_ratio > 1.0f) modulation_ratio = 1.0f;
                         }
                         break;
                     case PAGE_CV:
@@ -565,6 +663,10 @@ void key_proc(void)
                     case PAGE_CC:
                         // CC模式：增加电流参考值
                         Set_Current_Reference(i_ref + 0.1f);
+                        break;
+                    case PAGE_V_I:
+                        // V_I模式：KEY1增加电压参考值
+                        Set_Voltage_Reference(v_ref + 1.0f);
                         break;
                     case PAGE_FREQ:
                         // 频率调节页面：增加频率
@@ -592,8 +694,12 @@ void key_proc(void)
                         Set_Voltage_Reference(v_ref - 1.0f);
                         break;
                     case PAGE_CC:
-                        // CC模式：减少电流参考值
+                        // CC模式：减少电压参考值
                         Set_Current_Reference(i_ref - 0.1f);
+                        break;
+                    case PAGE_V_I:
+                        // V_I模式：KEY2减少电压参考值
+                        Set_Voltage_Reference(v_ref - 1.0f);
                         break;
                     case PAGE_FREQ:
                         // 频率调节页面：减少频率
@@ -607,50 +713,66 @@ void key_proc(void)
                 }
                 break;
 
-            case KEY3:  // PWM开启/关闭
-                // 切换PWM使能状态
-                pwm_enabled = !pwm_enabled;
-
-                if (pwm_enabled) {
-                    // 启用PWM输出
-                    PWM_Enable();
+            case KEY3:  // V_I模式下增加电流，其他模式PWM开关
+                if (current_page == PAGE_V_I) {
+                    // V_I模式：KEY3增加电流参考值
+                    Set_Current_Reference(i_ref + 0.1f);
                 } else {
-                    // 停止PWM输出
-                    PWM_Disable();
+                    // 其他模式：PWM开关
+                    pwm_enabled = !pwm_enabled;
+                    if (pwm_enabled) {
+                        // 启用PWM输出
+                        PWM_Enable();
+                    } else {
+                        // 停止PWM输出
+                        PWM_Disable();
+                    }
                 }
-
-                user_regulator_info("PWM %s", pwm_enabled ? "ENABLED" : "DISABLED");
                 break;
 
-
-
-            case KEY5:  // 页面切换
-                // 循环切换页面：Manual -> CV -> CC -> Freq -> Manual
-                switch (current_page) {
-                    case PAGE_MANUAL:
-                        current_page = PAGE_CV;
-                        Set_Control_Mode(CONTROL_MODE_VOLTAGE);
-                        break;
-                    case PAGE_CV:
-                        current_page = PAGE_CC;
-                        Set_Control_Mode(CONTROL_MODE_CURRENT);
-                        break;
-                    case PAGE_CC:
-                        current_page = PAGE_FREQ;
-                        Set_Control_Mode(CONTROL_MODE_MANUAL);  // 频率调节页面使用开环模式
-                        break;
-                    case PAGE_FREQ:
-                        current_page = PAGE_MANUAL;
-                        Set_Control_Mode(CONTROL_MODE_MANUAL);
-                        break;
-                    default:
-                        current_page = PAGE_MANUAL;
-                        Set_Control_Mode(CONTROL_MODE_MANUAL);
-                        break;
+            case KEY4:  // V_I模式下减少电流参考值
+                if (current_page == PAGE_V_I) {
+                    // V_I模式：KEY4减少电流参考值
+                    Set_Current_Reference(i_ref - 0.1f);
                 }
-                user_regulator_info("Page: %d, Mode: %s", current_page, Get_Control_Mode_Name(ctrl_mode));
+                // 其他页面不处理KEY4
                 break;
 
+            case KEY5:  // V_I模式下PWM开关，其他模式页面切换
+                if (current_page == PAGE_V_I) {
+                    // V_I模式：KEY5短按PWM开关
+                    pwm_enabled = !pwm_enabled;
+                    if (pwm_enabled) {
+                        PWM_Enable();
+                    } else {
+                        PWM_Disable();
+                    }
+                } else {
+                    // 其他模式：页面切换
+                    switch (current_page) {
+                        case PAGE_MANUAL:
+                            current_page = PAGE_CV;
+                            Set_Control_Mode(CONTROL_MODE_VOLTAGE);
+                            break;
+                        case PAGE_CV:
+                            current_page = PAGE_CC;
+                            Set_Control_Mode(CONTROL_MODE_CURRENT);
+                            break;
+                        case PAGE_CC:
+                            current_page = PAGE_V_I;
+                            Set_Control_Mode(CONTROL_MODE_V_I_CTRL);
+                            break;
+                        case PAGE_FREQ:
+                            current_page = PAGE_MANUAL;
+                            Set_Control_Mode(CONTROL_MODE_MANUAL);
+                            break;
+                        default:
+                            current_page = PAGE_MANUAL;
+                            Set_Control_Mode(CONTROL_MODE_MANUAL);
+                            break;
+                    }
+                }
+                break;
             default:
                 break;
         }
@@ -681,8 +803,14 @@ void Update_Disp(void)
             case PAGE_CC:
                 Display_CC_Mode_Page();
                 break;
+            case PAGE_V_I:
+                Display_V_I_Mode_Page();
+                break;
             case PAGE_FREQ:
                 Display_Freq_Mode_Page();
+                break;
+            case PAGE_DEBUG:
+                Display_Debug_Page();
                 break;
             default:
                 // 异常情况，强制回到手动模式
@@ -709,12 +837,9 @@ void Display_Freq_Mode_Page(void)
     OLED_Println(OLED_6X8, "Mod:%.1f%% (Open Loop)", modulation_ratio * 100.0f);
     OLED_Println(OLED_6X8, "V_AB:%.2fV", ac_voltage_rms_AB);
     OLED_Println(OLED_6X8, "V_BC:%.2fV", ac_voltage_rms_BC);
-    OLED_Println(OLED_6X8, "I_A:%.2fA I_B:%.2fA", ac_current_rms_A, ac_current_rms_B);
+    OLED_Println(OLED_6X8, "I_A:%.3fI_B:%.3fA", ac_current_rms_A, ac_current_rms_B);
     OLED_Println(OLED_6X8, "K1:+ K2:- K3:PWM K5:Page");
 }
-/**
- * @brief 手动模式显示界面 - 开环调制比控制
- */
 void Display_Manual_Mode_Page(void)
 {
     // 使用统一的小字体，避免混用字体导致的行号计算问题
@@ -725,13 +850,11 @@ void Display_Manual_Mode_Page(void)
     OLED_Println(OLED_6X8, "Mod:%.1f%% (Manual)", modulation_ratio * 100.0f);
     OLED_Println(OLED_6X8, "V_AB:%.2fV", ac_voltage_rms_AB);
     OLED_Println(OLED_6X8, "V_BC:%.2fV", ac_voltage_rms_BC);
-    OLED_Println(OLED_6X8, "I_A:%.2fA I_B:%.2fA", ac_current_rms_A, ac_current_rms_B);
+    OLED_Println(OLED_6X8, "I_A:%.3fA", ac_current_rms_A);
+    OLED_Println(OLED_6X8, "I_B:%.3fA", ac_current_rms_B);
     OLED_Println(OLED_6X8, "Freq:%.1fHz", variable_freq);
     OLED_Println(OLED_6X8, "1/2:+- 3:PWM 5:Page");
 }
-/**
- * @brief 恒压模式(CV)显示界面 - 三相逆变器
- */
 void Display_CV_Mode_Page(void)
 {
     // 使用统一的小字体，避免混用字体导致的行号计算问题
@@ -747,9 +870,6 @@ void Display_CV_Mode_Page(void)
     OLED_Println(OLED_6X8, "Freq:%.1fHz (Fixed)", variable_freq);
     OLED_Println(OLED_6X8, "1/2:+- 3:PWM 5:Page");
 }
-/**
- * @brief 恒流模式(CC)显示界面 - 三相逆变器
- */
 void Display_CC_Mode_Page(void)
 {
     // 使用统一的小字体，避免混用字体导致的行号计算问题
@@ -761,30 +881,60 @@ void Display_CC_Mode_Page(void)
     OLED_Println(OLED_6X8, "Mod:%.1f%% (Auto)", mod_output * 100.0f);
     OLED_Println(OLED_6X8, "V_AB:%.2fV", ac_voltage_rms_AB);
     OLED_Println(OLED_6X8, "V_BC:%.2fV", ac_voltage_rms_BC);
-    OLED_Println(OLED_6X8, "A:%.2fA B:%.2fA", ac_current_rms_A, ac_current_rms_B);
+    OLED_Println(OLED_6X8, "A:%.3fA B:%.3fA", ac_current_rms_A, ac_current_rms_B);
     OLED_Println(OLED_6X8, "Freq: %.1fHz (Fixed)", variable_freq);
     OLED_Println(OLED_6X8, "K1:+ K2:- K3:PWM K5:Page");
 }
-// ============================================================================
-// αβ坐标系电流控制器复位函数
-// ============================================================================
+
+/**
+ * @brief V_I分离控制模式页面显示 - 逆变器恒压+整流器恒流
+ */
+void Display_V_I_Mode_Page(void)
+{
+    // 使用统一的小字体，避免混用字体导致的行号计算问题
+    OLED_SetLine(0);
+
+    // V_I分离控制模式显示 - 增加调试信息
+    OLED_Println(OLED_6X8, "V_I_CTRL PWM:%s", pwm_enabled ? "ON" : "OFF");
+    OLED_Println(OLED_6X8, "V Set:%.1f Act:%.2fV", v_ref, ac_voltage_rms_AB);
+    OLED_Println(OLED_6X8, "I Set:%.2f Act:%.2fA", i_ref, ac_current_rms_A);
+    OLED_Println(OLED_6X8, "V_Mod:%.1f%% I_Mod:%.1f%%", mod_output * 100.0f, Modulation.Ma * 100.0f);
+    OLED_Println(OLED_6X8, "V_AB:%.2fV V_BC:%.2fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
+    OLED_Println(OLED_6X8, "I_A:%.3fA I_B:%.3fA", ac_current_rms_A, ac_current_rms_B);
+    OLED_Println(OLED_6X8, "Freq:%.1fHz", variable_freq);
+    OLED_Println(OLED_6X8, "1:V+ 2:V- 3:I+ 4:I- 5:PWM/MANUAL");
+}
+
+/**
+ * @brief 调试页面显示 - 显示新增的直流量采集数据
+ */
+void Display_Debug_Page(void)
+{
+    // 使用统一的小字体，避免混用字体导致的行号计算问题
+    OLED_SetLine(0);
+
+    // 调试页面显示新增的ADC数据
+    OLED_Println(OLED_6X8, "DEBUG - DC Data");
+    OLED_Println(OLED_6X8, "DC_I_Raw: %d", (uint16_t)dc_current_raw);
+    OLED_Println(OLED_6X8, "DC_V_Raw: %d", (uint16_t)dc_voltage_raw);
+    OLED_Println(OLED_6X8, "Bus_V_Raw: %d", (uint16_t)bus_voltage_raw);
+    OLED_Println(OLED_6X8, "ADC1: %d %d %d %d", adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3]);
+    OLED_Println(OLED_6X8, "ADC2: %d %d", adc2_buf[0], adc2_buf[1]);
+    OLED_Println(OLED_6X8, "ADC3: %d", adc3_buf[0]);
+    OLED_Println(OLED_6X8, "K5:Page (Debug Mode)");
+}
+
 void Current_Controller_AlphaBeta_Reset(void)
 {
     Current_Controller_AlphaBeta_Init();
     user_regulator_info("Alpha-Beta Current Controller Reset");
 }
-// ============================================================================
-// 饱和函数实现
-// ============================================================================
 float _fsat(float value, float max_val, float min_val)
 {
     if (value > max_val) return max_val;
     if (value < min_val) return min_val;
     return value;
 }
-// ============================================================================
-// αβ坐标系电流控制器初始化函数
-// ============================================================================
 void Current_Controller_AlphaBeta_Init(void)
 {
     // 清零所有控制器状态
@@ -814,9 +964,6 @@ void Current_Controller_AlphaBeta_Init(void)
 
     user_regulator_info("Alpha-Beta Current Controller Initialized");
 }
-/**
- * @brief 停止系统
- */
 void USER_Regulator_Stop(void)
 {
     // 禁用PWM
@@ -824,9 +971,6 @@ void USER_Regulator_Stop(void)
     // 复位控制器
     Dual_Loop_Control_Reset();
 }
-/**
- * @brief 使能PWM (同时启动逆变器和整流器PWM输出)
- */
 void PWM_Enable(void)
 {
     // 使能PWM输出 (GPIO控制) - 高电平使能
@@ -952,7 +1096,7 @@ void Set_Control_Mode(Control_Mode_t mode)
 
     Control_Mode_t old_mode = ctrl_mode;
     ctrl_mode = mode;
-
+    PWM_Disable();
     // 模式切换时复位控制器，防止积分饱和
     if (old_mode != mode) {
         Dual_Loop_Control_Reset();
@@ -1001,6 +1145,7 @@ const char* Get_Control_Mode_Name(Control_Mode_t mode)
         case CONTROL_MODE_MANUAL:  return "MANUAL";
         case CONTROL_MODE_VOLTAGE: return "CV";
         case CONTROL_MODE_CURRENT: return "CC";
+        case CONTROL_MODE_V_I_CTRL: return "V_I_CTRL";
         default:                   return "UNKNOWN";
     }
 }

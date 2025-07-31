@@ -55,8 +55,9 @@
 // ============================================================================
 // ADC数据缓冲区 (供user_regulator模块使用)
 // ============================================================================
-uint16_t adc_ac_buf[4];                     // AC环路缓冲区 (DMA长度=2)
-uint16_t adc3_reference_buf[1];             // ADC3参考信号缓冲区
+uint16_t adc1_buf[4];                       // ADC1缓冲区: [IN1, IN2, IN3, IN4] (DMA长度=4)
+uint16_t adc2_buf[2];                       // ADC2缓冲区: [IN3, IN4] (DMA长度=2)
+uint16_t adc3_buf[1];                       // ADC3缓冲区: [IN1] (DMA长度=1)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/

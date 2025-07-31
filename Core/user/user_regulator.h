@@ -24,10 +24,15 @@
 // 修正的测量增益系数 - 基于硬件设计计算 (修正数值避免无穷大)
 #define MeasureGain 0.000805664f     // ADC转换增益: 3.3V / 4096 = 0.000805664f
 // 偏置测量相关定义 - 基于1.65V偏置
-#define IacOffset_A     2048.0f    //adc_ac_buf[0] 48 56.17 8.17 2039.83
-#define VacOffset_AB    2048.0f   //adc_ac_buf[1]
-#define IacOffset_B     2048.0f    //adc_ac_buf[2]12.25 48 -12.25 35.75
-#define VacOffset_BC    2048.0f   //adc_ac_buf[3]
+#define IacOffset_A     2048.0f    // adc1_buf[0] - ADC1_IN1: IA
+#define VacOffset_AB    2048.0f    // adc1_buf[1] - ADC1_IN2: VAB
+#define IacOffset_B     2048.0f    // adc2_buf[0] - ADC2_IN3: IB
+#define VacOffset_BC    2048.0f    // adc2_buf[1] - ADC2_IN4: VBC
+
+// 新增直流量采集偏置定义（暂时设为0，实际使用时需要校准）
+#define DCCurrentOffset 0.0f       // adc1_buf[2] - ADC1_IN3: 整流电路输出直流电流
+#define DCVoltageOffset 0.0f       // adc1_buf[3] - ADC1_IN4: 整流电路输出直流电压
+#define BusVoltageOffset 0.0f      // adc3_buf[0] - ADC3_IN1: 直流母线电压
 
 
 
@@ -38,7 +43,7 @@ typedef enum {
     CONTROL_MODE_MANUAL = 0,    // 手动调制比模式
     CONTROL_MODE_VOLTAGE,       // 恒压输出模式 (CV)
     CONTROL_MODE_CURRENT,       // 恒流输出模式 (CC)
-    CONTROL_MODE_PLL_DEBUG,     // 开环锁相调试模式 (新增)
+    CONTROL_MODE_V_I_CTRL,      // 电压电流分离控制模式 (TIM8 CH1-3恒压, CH4+TIM1恒流)
     CONTROL_MODE_COUNT
 } Control_Mode_t;
 
@@ -49,14 +54,14 @@ typedef enum {
 // 归一化参数：基于30V标称电压整定，自动适应25V-65V范围
 #define PI_KP_V_NORM 0.9f        // 归一化电压环比例增益 (基于标称电压)
 #define PI_KI_V_NORM 0.3f       // 归一化电压环积分增益 (基于标称电压)
-#define PI_V_OUT_MAX  1.1547f    // 电压环输出最大值 (SVPWM扩展调制比: 2/√3)
+#define PI_V_OUT_MAX  1.0f       // 电压环输出最大值 (标准SPWM调制比)
 #define PI_V_OUT_MIN  0.0f       // 电压环输出最小值 (归一化调制比)
 
 // --- αβ坐标系电流环控制参数 (20kHz更新) - 调整参数以改善响应 ---
 #define PI_KP_CURRENT_ALPHA 0.5f    // α轴电流环比例增益 (增大以提高响应速度)
-#define PI_KI_CURRENT_ALPHA 0.1f    // α轴电流环积分增益 (增大以减少稳态误差)
+#define PI_KI_CURRENT_ALPHA 0.05f    // α轴电流环积分增益 (增大以减少稳态误差)
 #define PI_KP_CURRENT_BETA  0.5f    // β轴电流环比例增益 (增大以提高响应速度)
-#define PI_KI_CURRENT_BETA  0.1f    // β轴电流环积分增益 (增大以减少稳态误差)
+#define PI_KI_CURRENT_BETA  0.05f    // β轴电流环积分增益 (增大以减少稳态误差)
 #define PI_I_OUT_MAX  0.9f          // 电流环输出最大值 (调制比)
 #define PI_I_OUT_MIN  -0.9f         // 电流环输出最小值 (αβ坐标系可以为负)
 // --- 默认参考值 ---
@@ -187,7 +192,9 @@ void Update_Disp(void);
 void Display_Manual_Mode_Page(void);  // 手动模式显示（开环调制比）
 void Display_CV_Mode_Page(void);      // 恒压模式显示（三相）
 void Display_CC_Mode_Page(void);      // 恒流模式显示（三相）
+void Display_V_I_Mode_Page(void);     // 电压电流分离控制模式显示
 void Display_Freq_Mode_Page(void);    // 频率调节页面显示（开环频率调节）
+void Display_Debug_Page(void);        // 调试页面显示（新增直流量采集数据）
 
 // ============================================================================
 // PI控制器函数声明
@@ -254,7 +261,9 @@ typedef enum {
     PAGE_MANUAL = 0,    // 手动模式页面：开环调制比控制
     PAGE_CV,            // 恒压模式页面：CV控制
     PAGE_CC,            // 恒流模式页面：CC控制
+    PAGE_V_I,           // 电压电流分离控制页面：V_I_CTRL模式
     PAGE_FREQ,          // 频率调节页面：开环频率调节
+    PAGE_DEBUG,         // 调试页面：显示新增的直流量采集数据
     PAGE_COUNT          // 页面总数
 } Display_Page_t;
 
@@ -326,13 +335,6 @@ uint8_t Is_Offset_Measurement_Complete(void);  // 检查偏置测量是否完成
 void Reset_Offset_Measurement(void); // 重置偏置测量，重新开始测量
 void Perform_Initial_Offset_Measurement(void); // 在初始化阶段完成偏置测量
 
-// ============================================================================
-// 状态机相关函数声明
-// ============================================================================
-void State_Machine_Init(void);
-void State_Machine_PLL(void);
-void Set_System_State(System_State_t new_state);
-void Set_Start_CMD(uint16_t cmd);  // 设置启动命令 (供按键控制)
 
 // ============================================================================
 // 系统控制函数声明 (参考老师代码)
