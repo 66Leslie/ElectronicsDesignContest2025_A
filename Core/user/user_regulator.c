@@ -416,18 +416,31 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         duty_cycle_C_rect = (uint32_t)_fsat(duty_C_rect, PWM_PERIOD_TIM8, 0.0f);
     }
 
+    // 计算反相占空比（PWM周期 - 原占空比）
+    uint32_t duty_cycle_A_inv = PWM_PERIOD_TIM8 - duty_cycle_A;
+    uint32_t duty_cycle_B_inv = PWM_PERIOD_TIM8 - duty_cycle_B;
+    uint32_t duty_cycle_C_inv = PWM_PERIOD_TIM8 - duty_cycle_C;
+
+    // V_I模式需要单独计算整流器反相占空比
+    uint32_t duty_cycle_A_rect_inv = 0, duty_cycle_B_rect_inv = 0, duty_cycle_C_rect_inv = 0;
+    if (ctrl_mode == CONTROL_MODE_V_I_CTRL) {
+        duty_cycle_A_rect_inv = PWM_PERIOD_TIM8 - duty_cycle_A_rect;
+        duty_cycle_B_rect_inv = PWM_PERIOD_TIM8 - duty_cycle_B_rect;
+        duty_cycle_C_rect_inv = PWM_PERIOD_TIM8 - duty_cycle_C_rect;
+    }
+
     // 根据控制模式设置PWM输出
     switch (ctrl_mode) {
         case CONTROL_MODE_MANUAL:
-            // 开环模式：都输出，相序相反
+            // 开环模式：都输出，整流器与逆变器反相
             // 逆变器输出 (TIM8 CH1/CH2/CH3)
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty_cycle_A);  // A相
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);  // B相
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
-            // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 相序相反
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_C);  // C相
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_B);  // B相
-            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_A);  // A相
+            // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 与逆变器反相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_A_inv);  // A相反相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_B_inv);  // B相反相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_C_inv);  // C相反相
             break;
 
         case CONTROL_MODE_VOLTAGE:
@@ -443,27 +456,27 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
             break;
 
         case CONTROL_MODE_CURRENT:
-            // 电流闭环：只输出整流器，相序相反
+            // 电流闭环：只输出整流器
             // 逆变器输出关闭
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, 0);
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
-            // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 相序相反
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_C);  // C相
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_B);  // B相
+            // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 对应逆变器通道
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_A);  // A相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_B);  // B相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_C);  // C相
             break;
 
         case CONTROL_MODE_V_I_CTRL:
-            // V_I模式：都输出，使用各自的控制器输出，相序相反
+            // V_I模式：都输出，整流器与逆变器反相
             // 逆变器输出 (TIM8 CH1/CH2/CH3) - 恒压控制
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty_cycle_A);  // A相
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);  // B相
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
-            // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 恒流控制，相序相反
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_C_rect);  // C相
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_B_rect);  // B相
-            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_A_rect);  // A相
+            // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 恒流控制，与逆变器反相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_A_rect_inv);  // A相反相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_B_rect_inv);  // B相反相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_C_rect_inv);  // C相反相
             break;
 
         default:

@@ -94,3 +94,5 @@
 3	1551	7756683407981970	CMakeFiles/three_phase_spwm.dir/Core/Src/main.c.obj	ada47d8088b147e8
 307	2022	7756683412685983	CMakeFiles/three_phase_spwm.dir/Core/user/user_regulator.c.obj	da87209f17905a36
 2022	4614	7756683438552590	three_phase_spwm.elf	235a13a58173f0a1
+3	1322	7756697217315434	CMakeFiles/three_phase_spwm.dir/Core/user/user_regulator.c.obj	da87209f17905a36
+4	1984	7756697787222156	three_phase_spwm.elf	235a13a58173f0a1
