@@ -13,10 +13,11 @@
 #include "debug_config.h"  // 新增：调试配置文件
 
 // ============================================================================
-// 三相PWM控制变量 (合并后只使用TIM8)
+// 三相PWM控制变量 (逆变器+整流器同步输出)
 // ============================================================================
 #define SINE_TABLE_SIZE 400   // 10kHz/25Hz = 400个采样点，三相SPWM生成
-#define PWM_PERIOD_TIM8 8500     // TIM8的ARR (三相PWM)
+#define PWM_PERIOD_TIM8 8499     // TIM8的ARR (三相PWM)
+#define PWM_PERIOD_TIM1 8499     // TIM1的ARR (三相PWM，与TIM8同步)
 #define V_DC_NOMINAL 30.0f       // 标称直流母线电压 30V (用于归一化基准)
 #define V_DC_MIN 25.0f           // 最小直流母线电压
 #define V_DC_MAX 65.0f           // 最大直流母线电压
@@ -27,6 +28,8 @@
 #define VacOffset_AB    2048.0f   //adc_ac_buf[1]
 #define IacOffset_B     2048.0f    //adc_ac_buf[2]12.25 48 -12.25 35.75
 #define VacOffset_BC    2048.0f   //adc_ac_buf[3]
+
+
 
 // ============================================================================
 // 控制模式枚举 - 支持三种控制模式
@@ -226,6 +229,8 @@ void Current_Controller_AlphaBeta_Reset(void);
 void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float current_B);
 float _fsat(float value, float max_val, float min_val);
 
+
+
 // ============================================================================
 // 双环控制相关函数声明
 // ============================================================================
@@ -334,8 +339,9 @@ void Set_Start_CMD(uint16_t cmd);  // 设置启动命令 (供按键控制)
 // ============================================================================
 void USER_Regulator_Start(void);    // 启动系统 (参考老师代码)
 void USER_Regulator_Stop(void);     // 停止系统
-void PWM_Enable(void);               // 使能PWM (参考老师代码)
-void PWM_Disable(void);              // 禁用PWM (参考老师代码)
+void PWM_Enable(void);               // 使能PWM (同时启动逆变器和整流器)
+void PWM_Disable(void);              // 禁用PWM (同时停止逆变器和整流器)
+void Test_Rectifier_Sync(void);     // 测试整流器与逆变器同步性
 void Start_TIM8_For_Offset_Measurement(void);  // 启动TIM8用于偏置测量（保持shutdown低电平关断输出）
 
 // ============================================================================

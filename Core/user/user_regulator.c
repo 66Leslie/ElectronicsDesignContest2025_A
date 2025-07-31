@@ -12,10 +12,14 @@
 
 
 // ============================================================================
-// 三相PWM控制变量 (合并单相和三相PWM控制)
+// 三相PWM控制变量 (逆变器+整流器同步输出)
 // ============================================================================
+// PWM输出配置：
+// 逆变器输出：TIM8_CH1(PC6), TIM8_CH2(PC7), TIM8_CH3(PC8) - A/B/C相
+// 整流器输出：TIM8_CH4(PC9), TIM1_CH1(PE9), TIM1_CH2(PE11) - A/B/C相
+// 两组输出完全同步，使用相同的调制信号
 volatile float modulation_ratio = 0.5f;     // 调制比 (0.0 - 1.0)
-volatile uint8_t pwm_enabled = 0;           // PWM使能标志 (统一控制三相PWM)
+volatile uint8_t pwm_enabled = 0;           // PWM使能标志 (统一控制六路PWM)
 
 // 全局启动命令变量 (供按键控制)
 uint16_t variable_freq;
@@ -122,7 +126,7 @@ void user_regulator_init(void)
 
     key_init();
 
-    // 初始化三相PWM控制变量 (合并后统一使用)
+    // 初始化PWM控制变量
     modulation_ratio = 0.0f;  // 从较小的值开始，安全起见
     pwm_enabled = 0;          // 初始状态PWM关闭
 
@@ -177,10 +181,8 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     if(hadc->Instance == ADC3) {//全部使用内部信号
             // 内部信号模式：直接数学计算
             static uint32_t internal_counter = 0;
-
             // 确保频率在合理范围内，避免除零错误
             variable_freq  = _fsat(variable_freq, 100.0f, 1.0f);
-
             uint32_t period_samples = (uint32_t)(20000.0f / variable_freq);
             internal_counter = (internal_counter + 1) % period_samples;
             float current_angle = 2.0f * M_PI * internal_counter / (float)period_samples;
@@ -189,7 +191,7 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
             g_sogi_qsg.is_locked = 1;  // 内部信号始终锁定
             adc_completion_mask |= (1 << 2);
     }
-
+    
     // --- Part 2: 门禁检查，确保所有ADC都完成后才执行主逻辑 (10kHz/20kHz) ---
     if (adc_completion_mask != 0b00000111) {
         return; // 等待所有ADC完成
@@ -317,10 +319,15 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
 
     // --- Part 2.3: 20kHz快速环 - 核心控制与PWM更新 (每次都执行) ---
     if (!pwm_enabled) {
-        // PWM关闭时，清零占空比并返回
+        // PWM关闭时，清零所有PWM输出并返回
+        // 逆变器输出 (TIM8 CH1/CH2/CH3)
         __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, 0);
         __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
         __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
+        // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2)
+        __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, 0);  // A相 (PC9)
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);  // B相 (PE9)
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);  // C相 (PE11)
         return;
     }
 
@@ -392,10 +399,16 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     uint32_t duty_cycle_B = (uint32_t)_fsat(duty_B_float, PWM_PERIOD_TIM8, 0.0f);
     uint32_t duty_cycle_C = (uint32_t)_fsat(duty_C_float, PWM_PERIOD_TIM8, 0.0f);
 
-    // 设置三相PWM占空比
+    // 同时设置逆变器和整流器PWM输出（同步运行）
+    // 逆变器输出 (TIM8 CH1/CH2/CH3)
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty_cycle_A);  // A相
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);  // B相
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
+
+    // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 与逆变器同步
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_A);  // A相 (PC9)
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_B);  // B相 (PE9)
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_C);  // C相 (PE11)
 }
 // ============================================================================
 // 增量式PI控制器更新函数
@@ -609,6 +622,8 @@ void key_proc(void)
                 user_regulator_info("PWM %s", pwm_enabled ? "ENABLED" : "DISABLED");
                 break;
 
+
+
             case KEY5:  // 页面切换
                 // 循环切换页面：Manual -> CV -> CC -> Freq -> Manual
                 switch (current_page) {
@@ -810,41 +825,54 @@ void USER_Regulator_Stop(void)
     Dual_Loop_Control_Reset();
 }
 /**
- * @brief 使能PWM (TIM8三相PWM输出)
+ * @brief 使能PWM (同时启动逆变器和整流器PWM输出)
  */
 void PWM_Enable(void)
 {
     // 使能PWM输出 (GPIO控制) - 高电平使能
     HAL_GPIO_WritePin(GPIOE, GPIO_PIN_7, GPIO_PIN_SET);
 
-    // 启动TIM8的PWM输出 (不启动中断，因为逻辑已迁移至ADC回调)
+    // 启动逆变器PWM输出 (TIM8 CH1/CH2/CH3)
     HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_1);  // A相
     HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_2);  // B相
     HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_3);  // C相
+
+    // 启动整流器PWM输出 (TIM8_CH4 + TIM1_CH1/CH2)
+    HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_4);  // A相 (PC9)
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);  // B相 (PE9)
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);  // C相 (PE11)
 
     // 设置使能标志
     pwm_enabled = 1;
 }
 /**
- * @brief 禁用PWM (TIM8三相PWM输出)
+ * @brief 禁用PWM (同时停止逆变器和整流器PWM输出)
  */
 void PWM_Disable(void)
 {
     // 禁用PWM输出 (GPIO控制) - 低电平关断
     HAL_GPIO_WritePin(GPIOE, GPIO_PIN_7, GPIO_PIN_RESET);
 
-    // 停止TIM8的PWM输出
+    // 停止逆变器PWM输出 (TIM8 CH1/CH2/CH3)
     HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_1);   // A相
     HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_2);   // B相
     HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_3);   // C相
 
+    // 停止整流器PWM输出 (TIM8_CH4 + TIM1_CH1/CH2)
+    HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_4);   // A相 (PC9)
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);   // B相 (PE9)
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);   // C相 (PE11)
+
     // 清除使能标志
     pwm_enabled = 0;
 
-    // 确保输出为0
+    // 确保所有输出为0
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, 0);
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, 0);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
 }
 // ============================================================================
 // PI控制器初始化函数
@@ -1087,6 +1115,37 @@ float Voltage_PI_Norm_Update(Voltage_PI_Norm_t* pi, float v_ref, float v_feedbac
 
     return pi->output;
 }
+
+// ============================================================================
+// 三相整流器同步测试函数
+// ============================================================================
+/**
+ * @brief 测试三相整流器与逆变器的同步性
+ * @note 此函数用于验证六路PWM输出的同步性，可在调试时调用
+ */
+void Test_Rectifier_Sync(void)
+{
+    // 设置一个固定的测试调制比
+    float test_mod_ratio = 0.5f;
+
+    // 计算测试占空比
+    uint32_t test_duty = (uint32_t)(test_mod_ratio * PWM_PERIOD_TIM8);
+
+    // 同时设置所有PWM输出为相同占空比，验证同步性
+    // 逆变器输出
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, test_duty);
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, test_duty);
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, test_duty);
+
+    // 整流器输出 - 应与逆变器完全同步
+    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, test_duty);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, test_duty);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, test_duty);
+
+    // 可以在此处添加示波器测量点或LED指示
+    // 用示波器观察PC6与PC9、PC7与PE9、PC8与PE11的同步性
+}
+
 // ============================================================================
 // DC系数保存
 //     const float adc2_in3_val = (float)adc2_in3_raw * 3.3f / 4096.0f;
