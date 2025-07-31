@@ -77,10 +77,12 @@ volatile uint32_t state_transition_timer = 0;               // 状态转换定�
 // 高效锁相模块实例定义
 // ============================================================================
 SogiQsg_t g_sogi_qsg;  // 全局SOGI-QSG实例，基于老师的高效锁相算法
-SOGICompositeFilter_t sogi_filter_ia;  // A相电流SOGI复合滤波器实例
-SOGICompositeFilter_t sogi_filter_ib;  // B相电流SOGI复合滤波器实例
-SOGICompositeFilter_t sogi_filter_vab; // AB线电压SOGI复合滤波器实例
-SOGICompositeFilter_t sogi_filter_vbc; // BC线电压SOGI复合滤波器实例
+SOGICompositeFilter_t sogi_filter_vab; // AB线电压SOGI复合滤波器实例（用于锁相）
+SOGICompositeFilter_t sogi_filter_vbc; // BC线电压SOGI复合滤波器实例（用于锁相）
+
+// 快速电流环专用限幅滤波器（无相位延迟）
+LimitFilter_t limit_filter_ia;  // A相电流限幅滤波器
+LimitFilter_t limit_filter_ib;  // B相电流限幅滤波器
 
 // ============================================================================
 // 显示相关变量
@@ -141,19 +143,17 @@ void user_regulator_init(void)
     // 初始化双环控制系统（包括PI控制器）
     Dual_Loop_Control_Init();
     // 初始化状态机,进入等待状态
-    // 初始化SOGI复合滤波器
-    SOGICompositeFilter_Init(&sogi_filter_ia,
-                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ,
-                            SOGI_DAMPING_FACTOR, 0.026f, 1.0f, 0.0f);
-    SOGICompositeFilter_Init(&sogi_filter_ib,
-                            SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ,
-                            SOGI_DAMPING_FACTOR, 0.026f, 1.0f, 0.0f);
+    // 初始化电压SOGI复合滤波器（用于锁相和RMS计算）
     SOGICompositeFilter_Init(&sogi_filter_vab,
                             SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ,
                             SOGI_DAMPING_FACTOR, 0.026f, 0.1f, 0.0f);
     SOGICompositeFilter_Init(&sogi_filter_vbc,
                             SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ,
                             SOGI_DAMPING_FACTOR, 0.026f, 0.1f, 0.0f);
+
+    // 初始化电流限幅滤波器（快速响应，无相位延迟）
+    LimitFilter_Init(&limit_filter_ia, 0.026f, 0.0f);  // 最大变化0.026A，初始值0
+    LimitFilter_Init(&limit_filter_ib, 0.026f, 0.0f);  // 最大变化0.026A，初始值0
     // 初始化参考信号选择
     current_reference_signal = REF_SIGNAL_INTERNAL;  // 默认使用内部参考信号
 }
@@ -213,11 +213,13 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     dc_voltage_raw = (float)adc1_buf[3];        // ADC1_IN4: 整流电路输出直流电压
     bus_voltage_raw = (float)adc3_buf[0];       // ADC3_IN1: 直流母线电压
 
-    // 恢复：V_I模式也使用SOGI滤波器，确保相位信息准确
-    float current_A_filtered = SOGICompositeFilter_Update(&sogi_filter_ia, current_A_base);
-    float current_B_filtered = SOGICompositeFilter_Update(&sogi_filter_ib, current_B_base);
+    // 电压信号使用SOGI滤波器（用于锁相和RMS计算）
     float voltage_AB_filtered = SOGICompositeFilter_Update(&sogi_filter_vab, voltage_AB_base);
     float voltage_BC_filtered = SOGICompositeFilter_Update(&sogi_filter_vbc, voltage_BC_base);
+
+    // 电流信号使用限幅滤波器（快速响应，无相位延迟）
+    float current_A_filtered = LimitFilter_Update(&limit_filter_ia, current_A_base);
+    float current_B_filtered = LimitFilter_Update(&limit_filter_ib, current_B_base);
 
     // 累加基础值的平方（用于RMS计算）- 添加数值保护
     // 限制基础值范围，避免平方后溢出
@@ -307,9 +309,9 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
         __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
         // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2)
-        __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, 0);  // A相 (PC9)
-        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);  // B相 (PE9)
-        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);  // C相 (PE11)
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0); 
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0); 
+        __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, 0); 
         return;
     }
     // 瞬时值传递系数应用（使用您标定的传递系数）
@@ -438,9 +440,9 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);  // B相
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
             // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 与逆变器反相
-            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_A_inv);  // A相反相
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_B_inv);  // B相反相
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_C_inv);  // C相反相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_A_inv);  // A相反相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_B_inv);  // B相反相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_C_inv);  // C相反相
             break;
 
         case CONTROL_MODE_VOLTAGE:
@@ -462,9 +464,9 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
             // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 对应逆变器通道
-            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_A);  // A相
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_B);  // B相
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_C);  // C相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_A);  // A相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_B);  // B相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_C);  // C相
             break;
 
         case CONTROL_MODE_V_I_CTRL:
@@ -474,9 +476,9 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);  // B相
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
             // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 恒流控制，与逆变器反相
-            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_A_rect_inv);  // A相反相
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_B_rect_inv);  // B相反相
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_C_rect_inv);  // C相反相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_A_rect_inv);  // A相反相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_B_rect_inv);  // B相反相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_C_rect_inv);  // C相反相
             break;
 
         default:
@@ -553,20 +555,15 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
     float current_C = -(current_A + current_B);
 
     // 步骤1: Clarke变换 - 将三相电流反馈转换到αβ坐标系
-    // α = (2/3)*Ia - (1/3)*Ib - (1/3)*Ic β = (1/√3)*(Ib - Ic)
     float F32alpha = current_A * 0.6666666667f - current_B * 0.3333333334f - current_C * 0.3333333334f;
     float F32beta = (current_B - current_C) * 0.57735026918963f;
 
     // 步骤2: 生成三相电流指令 (基于锁相环的sin/cos值)
-    // A相: Ia_CMD * cos(θ)
     CurrConReg.Ia_CMD = Ia_CMD * g_sogi_qsg.cos_theta;
-    // B相: Ia_CMD * cos(θ - 120°) = Ia_CMD * (cosθ * (-0.5) + sinθ * (sqrt(3)/2))
     CurrConReg.Ib_CMD = Ia_CMD * (g_sogi_qsg.cos_theta * (-0.5f) + g_sogi_qsg.sin_theta * (0.8660254f));
-    // C相: Ia_CMD * cos(θ + 120°) = Ia_CMD * (cosθ * (-0.5) - sinθ * (sqrt(3)/2))
     CurrConReg.Ic_CMD = Ia_CMD * (g_sogi_qsg.cos_theta * (-0.5f) - g_sogi_qsg.sin_theta * (0.8660254f));
-    
+
     // 步骤3: Clarke变换 - 将三相电流指令转换到αβ坐标系
-    // Valpha_CMD = (2/3)*Ia_CMD - (1/3)*Ib_CMD - (1/3)*Ic_CMD Vbeta_CMD = (1/√3)*(Ib_CMD - Ic_CMD)
     CurrConReg.Valpha_CMD = CurrConReg.Ia_CMD * 0.6666666667f - (CurrConReg.Ib_CMD + CurrConReg.Ic_CMD) * 0.3333333334f;
     CurrConReg.Vbeta_CMD  = (CurrConReg.Ib_CMD - CurrConReg.Ic_CMD) * 0.57735026918963f;
 
@@ -587,7 +584,7 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
 
     // β轴输出限幅
     CurrConReg.PI_Out_Beta = _fsat(CurrConReg.PI_Out_Beta, PI_I_OUT_MAX, PI_I_OUT_MIN);
-	
+
 	// 更新历史误差，为下一次计算做准备
     CurrConReg.Error_alpha_Pre = CurrConReg.Error_alpha;
     CurrConReg.Error_beta_Pre = CurrConReg.Error_beta;
