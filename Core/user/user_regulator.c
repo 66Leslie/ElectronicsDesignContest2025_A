@@ -264,12 +264,18 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         // 真实值 = m * 显示值 + c 低参考值 高参考值 (V_oled1, V_real1) 和 (V_oled2, V_real2)
         //ac_voltage_rms_AB 
         // 应用你通过两点校准计算出的新系数 m 和 c
-        const float cal_m_Vab = 0.993f; // 示例值：新的斜率
-        const float cal_c_Vab = 0.2417f; // 示例值：新的截距
-        ac_voltage_rms_AB = ac_voltage_rms_AB * cal_m_Vab + cal_c_Vab;
-        const float cal_m_Vbc = 0.9938f; // 示例值：新的斜率
-        const float cal_c_Vbc = 0.1999f;
-        ac_voltage_rms_BC = ac_voltage_rms_BC * cal_m_Vbc + cal_c_Vbc;
+        const float m_Vab = 1.0004f; // 示例值：新的斜率
+        const float c_Vab = 0.209f; 
+        ac_voltage_rms_AB = ac_voltage_rms_AB * m_Vab + c_Vab;
+        const float m_Vbc = 0.9921f; // 示例值：新的斜率
+        const float c_Vbc = 0.2063f;
+        ac_voltage_rms_BC = ac_voltage_rms_BC *m_Vbc + c_Vbc;
+        const float m_Ia = 1.0408f; // 示例值：新的斜率
+        const float c_Ia = 0.0023f; 
+        ac_current_rms_A = ac_current_rms_A * m_Ia + c_Ia;
+        const float m_Ib = 0.9825f; // 示例值：新的斜率
+        const float c_Ib = 0.0123f;
+        ac_current_rms_B = ac_current_rms_B * m_Ib + c_Ib;
         // 最终结果限制，避免异常值
         ac_current_rms_A = _fsat(ac_current_rms_A, 100.0f, 0.0f);
         ac_voltage_rms_AB = _fsat(ac_voltage_rms_AB, 1000.0f, 0.0f);
