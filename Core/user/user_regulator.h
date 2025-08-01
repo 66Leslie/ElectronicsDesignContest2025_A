@@ -46,9 +46,9 @@
 
 // --- αβ坐标系电流环控制参数 (20kHz更新) - 优化参数以改善三相平衡 ---
 #define PI_KP_CURRENT_ALPHA 0.12f    // α轴电流环比例增益 (增大以提高响应速度)
-#define PI_KI_CURRENT_ALPHA 0.0236f   // α轴电流环积分增益 (减小以避免积分饱和)
+#define PI_KI_CURRENT_ALPHA 0.0175f   // α轴电流环积分增益 (减小以避免积分饱和)
 #define PI_KP_CURRENT_BETA  0.12f    // β轴电流环比例增益 (增大以提高响应速度)
-#define PI_KI_CURRENT_BETA  0.0236f   // β轴电流环积分增益 (减小以避免积分饱和)
+#define PI_KI_CURRENT_BETA  0.0175f   // β轴电流环积分增益 (减小以避免积分饱和)
 #define PI_I_OUT_MAX  0.95f          // 电流环输出最大值 (调制比)
 #define PI_I_OUT_MIN  -0.95f         // 电流环输出最小值 (αβ坐标系可以为负)
 

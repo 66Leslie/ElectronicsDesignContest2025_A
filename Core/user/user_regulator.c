@@ -56,9 +56,8 @@ Current_Controller_DQ_t CurrConReg_DQ;
 // ============================================================================
 // ADC数据缓冲区 (外部定义)
 // ============================================================================
-extern uint16_t adc1_buf[4];                // ADC1缓冲区: [IN1, IN2, IN3, IN4] (在main.c中定义)
+extern uint16_t adc1_buf[2];                // ADC1缓冲区: [IN1, IN2, IN3, IN4] (在main.c中定义)
 extern uint16_t adc2_buf[2];                // ADC2缓冲区: [IN3, IN4] (在main.c中定义)
-extern uint16_t adc3_buf[1];                // ADC3缓冲区: [IN1] (在main.c中定义)
 
 // ============================================================================
 volatile float reference_frequency = 50.0f;  // 参考信号频率（固定值）
@@ -145,15 +144,6 @@ void user_regulator_init(void)
     ac_sample_count = 0;
     // 初始化双环控制系统（包括PI控制器）
     Dual_Loop_Control_Init();
-    // 初始化状态机,进入等待状态
-    //初始化电压SOGI复合滤波器（用于锁相和RMS计算）
-    // SOGICompositeFilter_Init(&sogi_filter_vab,
-    //                         SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ,
-    //                         SOGI_DAMPING_FACTOR, 0.026f, 0.1f, 0.0f);
-    // SOGICompositeFilter_Init(&sogi_filter_vbc,
-    //                         SOGI_TARGET_FREQ, SOGI_SAMPLING_FREQ,
-    //                         SOGI_DAMPING_FACTOR, 0.026f, 0.1f, 0.0f);
-
     // 初始化限幅滤波器（快速响应，无相位延迟）
     LimitFilter_Init(&limit_filter_Vab,0.026f, 0.0f);
     LimitFilter_Init(&limit_filter_Vbc,0.026f, 0.0f);
@@ -235,20 +225,18 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         ac_current_rms_B = sqrtf(current_B_sum * 0.0025f) * 5.1778f - 0.0111f;
         ac_voltage_rms_BC = sqrtf(voltage_BC_sum * 0.0025f) * 68.011f - 0.1784f;
         // 真实值 = m * 显示值 + c 低参考值 高参考值 (V_oled1, V_real1) 和 (V_oled2, V_real2)
-        //ac_voltage_rms_AB 
-        // 应用你通过两点校准计算出的新系数 m 和 c
-        // const float m_Vab = 1.0004f; // 示例值：新的斜率
-        // const float c_Vab = 0.209f; 
-        // ac_voltage_rms_AB = ac_voltage_rms_AB * m_Vab + c_Vab;
-        // const float m_Vbc = 0.9921f; // 示例值：新的斜率
-        // const float c_Vbc = 0.2063f;
-        // ac_voltage_rms_BC = ac_voltage_rms_BC *m_Vbc + c_Vbc;
-        // const float m_Ia = 0.9921; // 示例值：新的斜率
-        // const float c_Ia = 0.0102; 
-        // ac_current_rms_A = ac_current_rms_A * m_Ia + c_Ia;
-        // const float m_Ib = 0.9608f; // 示例值：新的斜率
-        // const float c_Ib = 0.0143f;
-        // ac_current_rms_B = ac_current_rms_B * m_Ib + c_Ib;
+        const float m_Vab = 1.0152f; // 示例值：新的斜率
+        const float c_Vab =-0.0402f; 
+        ac_voltage_rms_AB = ac_voltage_rms_AB * m_Vab + c_Vab;
+        const float m_Vbc = 1.0055f; // 示例值：新的斜率
+        const float c_Vbc =-0.0908f;
+        ac_voltage_rms_BC = ac_voltage_rms_BC *m_Vbc + c_Vbc;
+        const float m_Ia = 1.1111f; // 示例值：新的斜率
+        const float c_Ia = 0.0146f; 
+        ac_current_rms_A = ac_current_rms_A * m_Ia + c_Ia;
+        const float m_Ib = 1.0808f; // 示例值：新的斜率
+        const float c_Ib = 0.0092f;
+        ac_current_rms_B = ac_current_rms_B * m_Ib + c_Ib;
         // 2. 清空累加器
         current_A_sum = 0.0f;current_B_sum = 0.0f;voltage_AB_sum = 0.0f;voltage_BC_sum = 0.0f;voltage_AC_sum = 0.0f;
         // 3. 执行外环控制器 (电压环或电流环参考值更新)
@@ -298,13 +286,13 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     // 瞬时值传递系数应用（使用您标定的传递系数）
     float current_A_calibrated = current_A_filtered * 5.1778f - 0.0111f;
     float current_B_calibrated = current_B_filtered * 5.1778f - 0.0111f;
-    // const float m_Ia = 0.9921; // 示例值：新的斜率
-    // const float c_Ia = 0.0102; 
-    // current_A_calibrated = current_A_calibrated * m_Ia + c_Ia;
-    // const float m_Ib = 0.9608f; // 示例值：新的斜率
-    // const float c_Ib = 0.0143f;
-    // current_B_calibrated = current_B_calibrated * m_Ib + c_Ib;
-    // 根据控制模式计算三相PWM占空比
+    const float m_Ia = 1.1111f; // 示例值：新的斜率
+    const float c_Ia = 0.0146f; 
+    current_A_calibrated = current_A_calibrated * m_Ia + c_Ia;
+    const float m_Ib = 1.0808f; // 示例值：新的斜率
+    const float c_Ib = 0.0092f;
+    current_B_calibrated = current_B_calibrated * m_Ib + c_Ib;
+    // 根据控制模式计算三相PWM占空比    
     float duty_A_float = 0.0f, duty_B_float = 0.0f, duty_C_float = 0.0f;
     // V_I_CTRL模式需要分别计算逆变器和整流器的占空比
     float duty_A_rect = 0.0f, duty_B_rect = 0.0f, duty_C_rect = 0.0f;
@@ -314,16 +302,7 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
                 // 恒流控制：使用αβ坐标系电流控制器，但输出标准SPWM
                 i_ref_peak = i_ref * 1.414213562f;
                 Current_Controller_AlphaBeta_Update(i_ref_peak, current_A_calibrated, current_B_calibrated);
-
-                // // DQ坐标系电流控制器调用 (可配置频率，降低计算压力)
-                // static uint8_t dq_counter_1 = 0;
-                // dq_counter_1++;
-                // if (dq_counter_1 >= DQ_FREQ_DIVIDER) {  // 可配置分频比
-                //     dq_counter_1 = 0;
-                //     Current_Controller_DQ_Update(i_ref_peak, 0.0f, current_A_calibrated, current_B_calibrated);
-                //     Current_Controller_AlphaBeta_Update(i_ref_peak, current_A_calibrated, current_B_calibrated);
-                // }
-
+                Current_Controller_DQ_Update(i_ref_peak, 0.0f, current_A_calibrated, current_B_calibrated);
                 // 2. 限制三相调制信号 (增大限制范围以避免饱和)
                 float mod_A = _fsat(Modulation.Ma, 1.0f, -1.0f);
                 float mod_B = _fsat(Modulation.Mb, 1.0f, -1.0f);
@@ -563,21 +542,51 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
     // Vbeta_CMD = (1/√3)*(Ib_CMD - Ic_CMD)
     CurrConReg.Vbeta_CMD  = (CurrConReg.Ib_CMD - CurrConReg.Ic_CMD) * 0.57735026918963f;
 
-    // 步骤4: 计算α轴误差并更新PI控制器
+    // 步骤4: 计算α轴误差并更新PI控制器 (带抗积分饱和)
     CurrConReg.Error_alpha = CurrConReg.Valpha_CMD - F32alpha;
-    float delta_alpha = (PI_KP_CURRENT_ALPHA * (CurrConReg.Error_alpha - CurrConReg.Error_alpha_Pre)) + (PI_KI_CURRENT_ALPHA * CurrConReg.Error_alpha);
-    CurrConReg.PI_Out_alpha += delta_alpha;
 
-    // α轴输出限幅
-    CurrConReg.PI_Out_alpha = _fsat(CurrConReg.PI_Out_alpha, PI_I_OUT_MAX, PI_I_OUT_MIN);
+    // 分离比例项和积分项
+    float p_term_alpha = PI_KP_CURRENT_ALPHA * (CurrConReg.Error_alpha - CurrConReg.Error_alpha_Pre);
+    float i_term_alpha = PI_KI_CURRENT_ALPHA * CurrConReg.Error_alpha;
 
-    // 步骤5: 计算β轴误差并更新PI控制器
+    // 保存上一次输出值
+    float prev_output_alpha = CurrConReg.PI_Out_alpha;
+    float new_output_alpha = prev_output_alpha + p_term_alpha + i_term_alpha;
+
+    // 抗积分饱和逻辑：检查上一时刻是否饱和，只允许脱离饱和的增量通过
+    if ((prev_output_alpha >= PI_I_OUT_MAX) && ((p_term_alpha + i_term_alpha) > 0)) {
+        // 如果上次输出已达上饱和，且本次增量为正，则只允许比例项通过
+        CurrConReg.PI_Out_alpha = PI_I_OUT_MAX;
+    } else if ((prev_output_alpha <= PI_I_OUT_MIN) && ((p_term_alpha + i_term_alpha) < 0)) {
+        // 如果上次输出已达下饱和，且本次增量为负，则只允许比例项通过
+        CurrConReg.PI_Out_alpha = PI_I_OUT_MIN;
+    } else {
+        // 在未饱和或增量方向有助于脱离饱和的情况下，正常更新并限幅
+        CurrConReg.PI_Out_alpha = _fsat(new_output_alpha, PI_I_OUT_MAX, PI_I_OUT_MIN);
+    }
+
+    // 步骤5: 计算β轴误差并更新PI控制器 (带抗积分饱和)
     CurrConReg.Error_beta = CurrConReg.Vbeta_CMD - F32beta;
-    float delta_beta = (PI_KP_CURRENT_BETA * (CurrConReg.Error_beta - CurrConReg.Error_beta_Pre)) + (PI_KI_CURRENT_BETA * CurrConReg.Error_beta);
-    CurrConReg.PI_Out_Beta += delta_beta;
 
-    // β轴输出限幅
-    CurrConReg.PI_Out_Beta = _fsat(CurrConReg.PI_Out_Beta, PI_I_OUT_MAX, PI_I_OUT_MIN);
+    // 分离比例项和积分项
+    float p_term_beta = PI_KP_CURRENT_BETA * (CurrConReg.Error_beta - CurrConReg.Error_beta_Pre);
+    float i_term_beta = PI_KI_CURRENT_BETA * CurrConReg.Error_beta;
+
+    // 保存上一次输出值
+    float prev_output_beta = CurrConReg.PI_Out_Beta;
+    float new_output_beta = prev_output_beta + p_term_beta + i_term_beta;
+
+    // 抗积分饱和逻辑：检查上一时刻是否饱和，只允许脱离饱和的增量通过
+    if ((prev_output_beta >= PI_I_OUT_MAX) && ((p_term_beta + i_term_beta) > 0)) {
+        // 如果上次输出已达上饱和，且本次增量为正，则只允许比例项通过
+        CurrConReg.PI_Out_Beta = PI_I_OUT_MAX;
+    } else if ((prev_output_beta <= PI_I_OUT_MIN) && ((p_term_beta + i_term_beta) < 0)) {
+        // 如果上次输出已达下饱和，且本次增量为负，则只允许比例项通过
+        CurrConReg.PI_Out_Beta = PI_I_OUT_MIN;
+    } else {
+        // 在未饱和或增量方向有助于脱离饱和的情况下，正常更新并限幅
+        CurrConReg.PI_Out_Beta = _fsat(new_output_beta, PI_I_OUT_MAX, PI_I_OUT_MIN);
+    }
 	
 	// 更新历史误差，为下一次计算做准备
     CurrConReg.Error_alpha_Pre = CurrConReg.Error_alpha;
@@ -1068,9 +1077,8 @@ void Display_Debug_Page(void)
     OLED_Println(OLED_6X8, "DC_I_Raw: %d", (uint16_t)dc_current_raw);
     OLED_Println(OLED_6X8, "DC_V_Raw: %d", (uint16_t)dc_voltage_raw);
     OLED_Println(OLED_6X8, "Bus_V_Raw: %d", (uint16_t)bus_voltage_raw);
-    OLED_Println(OLED_6X8, "ADC1: %d %d %d %d", adc1_buf[0], adc1_buf[1], adc1_buf[2], adc1_buf[3]);
+    OLED_Println(OLED_6X8, "ADC1: %d %d %d %d", adc1_buf[0], adc1_buf[1], adc1_buf[2]);
     OLED_Println(OLED_6X8, "ADC2: %d %d", adc2_buf[0], adc2_buf[1]);
-    OLED_Println(OLED_6X8, "ADC3: %d", adc3_buf[0]);
     OLED_Println(OLED_6X8, "K5:Page (Debug Mode)");
 }
 
