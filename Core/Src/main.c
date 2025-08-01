@@ -55,7 +55,7 @@
 // ============================================================================
 // ADC数据缓冲区 (供user_regulator模块使用)
 // ============================================================================
-uint16_t adc1_buf[4];                       // ADC1缓冲区: [IN1, IN2, IN3, IN4] (DMA长度=4)
+uint16_t adc1_buf[2];                       // ADC1缓冲区: [IN1, IN2, IN3, IN4] (DMA长度=4)
 uint16_t adc2_buf[2];                       // ADC2缓冲区: [IN3, IN4] (DMA长度=2)
 uint16_t adc3_buf[1];                       // ADC3缓冲区: [IN1] (DMA长度=1)
 /* USER CODE END PV */
@@ -103,7 +103,6 @@ int main(void)
   MX_DMA_Init();
   MX_ADC1_Init();
   MX_ADC2_Init();
-  MX_ADC3_Init();
   MX_I2C1_Init();
   MX_TIM8_Init();
   MX_USART1_UART_Init();

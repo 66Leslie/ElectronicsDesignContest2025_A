@@ -18,7 +18,7 @@
 #define SINE_TABLE_SIZE 400   // 10kHz/25Hz = 400个采样点，三相SPWM生成
 #define PWM_PERIOD_TIM8 8499     // TIM8的ARR (三相PWM)
 #define PWM_PERIOD_TIM1 8499     // TIM1的ARR (三相PWM，与TIM8同步)
-#define V_DC_NOMINAL 30.0f       // 标称直流母线电压 30V (用于归一化基准)
+#define V_DC_NOMINAL 60.0f       // 标称直流母线电压 60V (用于归一化基准)
 #define V_DC_MIN 25.0f           // 最小直流母线电压
 #define V_DC_MAX 65.0f           // 最大直流母线电压
 // 修正的测量增益系数 - 基于硬件设计计算 (修正数值避免无穷大)
@@ -44,13 +44,29 @@
 #define PI_V_OUT_MAX  1.0f       // 电压环输出最大值 (标准SPWM调制比)
 #define PI_V_OUT_MIN  0.0f       // 电压环输出最小值 (归一化调制比)
 
-// --- αβ坐标系电流环控制参数 (20kHz更新) - 【请使用新的参数值】 ---
-#define PI_KP_CURRENT_ALPHA 0.5f    // α轴电流环比例增益 (增大以提高响应速度)
-#define PI_KI_CURRENT_ALPHA 0.1f    // α轴电流环积分增益 (增大以减少稳态误差)
-#define PI_KP_CURRENT_BETA  0.5f    // β轴电流环比例增益 (增大以提高响应速度)
-#define PI_KI_CURRENT_BETA  0.1f    // β轴电流环积分增益 (增大以减少稳态误差)
-#define PI_I_OUT_MAX  0.9f          // 电流环输出最大值 (调制比)
-#define PI_I_OUT_MIN  -0.9f         // 电流环输出最小值 (αβ坐标系可以为负)
+// --- αβ坐标系电流环控制参数 (20kHz更新) - 优化参数以改善三相平衡 ---
+#define PI_KP_CURRENT_ALPHA 0.12f    // α轴电流环比例增益 (增大以提高响应速度)
+#define PI_KI_CURRENT_ALPHA 0.0236f   // α轴电流环积分增益 (减小以避免积分饱和)
+#define PI_KP_CURRENT_BETA  0.12f    // β轴电流环比例增益 (增大以提高响应速度)
+#define PI_KI_CURRENT_BETA  0.0236f   // β轴电流环积分增益 (减小以避免积分饱和)
+#define PI_I_OUT_MAX  0.95f          // 电流环输出最大值 (调制比)
+#define PI_I_OUT_MIN  -0.95f         // 电流环输出最小值 (αβ坐标系可以为负)
+
+// --- DQ坐标系电流环控制参数 (20kHz更新) - 基于稳定版本参数优化 ---
+#define PI_KP_CURRENT_ID    0.2f    // d轴电流环比例增益 (与稳定版本一致)
+#define PI_KI_CURRENT_ID    0.0f   // d轴电流环积分增益 (与稳定版本一致，避免积分饱和)
+#define PI_KP_CURRENT_IQ    0.2f    // q轴电流环比例增益 (与稳定版本一致)
+#define PI_KI_CURRENT_IQ    0.0f   // q轴电流环积分增益 (与稳定版本一致，避免积分饱和)
+#define PI_DQ_OUT_MAX       1.2f    // DQ电流环输出最大值 (与稳定版本一致)
+#define PI_DQ_OUT_MIN      -1.2f    // DQ电流环输出最小值 (与稳定版本一致)
+
+// --- DQ解耦控制参数 ---
+#define DQ_DECOUPLING_ENABLE 0      // DQ解耦控制使能 (0=禁用, 1=启用)
+#define MOTOR_INDUCTANCE     0.001f // 电机电感值 (H) - 需要根据实际电机参数调整
+#define GRID_OMEGA_NOMINAL   314.159f // 标称角频率 (2*π*50Hz)
+
+// --- DQ控制器频率控制参数 ---
+#define DQ_FREQ_DIVIDER      2      // DQ控制器频率分频 (2=10kHz, 4=5kHz, 1=20kHz)
 // --- 默认参考值 ---
 #define V_REF_DEFAULT 5.0f     // 默认参考电压 (RMS)
 #define I_REF_DEFAULT 0.5f      // 默认参考电流 (RMS)
@@ -65,10 +81,6 @@ typedef enum {
     CONTROL_MODE_V_I_CTRL,      // 电压电流分离控制模式 (TIM8 CH1-3恒压, CH4+TIM1恒流)
     CONTROL_MODE_COUNT
 } Control_Mode_t;
-
-
-
-
 // ============================================================================
 // PI控制器结构体
 // ============================================================================
@@ -125,6 +137,37 @@ typedef struct {
 } Current_Controller_AlphaBeta_t;
 
 // ============================================================================
+// DQ坐标系电流控制器结构体
+// ============================================================================
+typedef struct {
+    // DQ坐标系电流指令值
+    float Id_CMD;           // d轴电流指令
+    float Iq_CMD;           // q轴电流指令
+
+    // DQ坐标系电流反馈值
+    float Id_feedback;      // d轴电流反馈
+    float Iq_feedback;      // q轴电流反馈
+
+    // DQ坐标系误差值
+    float Error_d;          // d轴电流误差
+    float Error_d_Pre;      // d轴电流误差历史值
+    float Error_q;          // q轴电流误差
+    float Error_q_Pre;      // q轴电流误差历史值
+
+    // DQ坐标系PI控制器输出
+    float PI_Out_d;         // d轴PI控制器输出
+    float PI_Out_q;         // q轴PI控制器输出
+
+    // DQ坐标系电压指令值 (PI控制器输出)
+    float Vd_CMD;           // d轴电压指令
+    float Vq_CMD;           // q轴电压指令
+
+    // αβ坐标系电压指令值 (反PARK变换后)
+    float Valpha_out;       // α轴电压输出
+    float Vbeta_out;        // β轴电压输出
+} Current_Controller_DQ_t;
+
+// ============================================================================
 // 三相调制信号结构体
 // ============================================================================
 typedef struct {
@@ -137,6 +180,11 @@ typedef struct {
 // 数据处理变量和测量增益系数 (参考老师代码)
 // ============================================================================
 #define AC_SAMPLE_SIZE 400     // AC采样点数（每通道，对应50Hz周期）20kHz(update event)
+
+// 调试开关
+#define ALPHABETA_DEBUG_PRINTF 0       // αβ坐标系控制器调试输出开关
+#define CURRENT_CONTROL_DEBUG 0        // 电流控制调试开关
+
 // ============================================================================
 // 高效锁相模块实例声明
 // ============================================================================
@@ -153,6 +201,9 @@ extern volatile float i_fdbk_inst;         // 瞬时电流反馈值
 // αβ坐标系电流控制器实例
 extern Current_Controller_AlphaBeta_t CurrConReg;
 extern Modulation_t Modulation;
+
+// DQ坐标系电流控制器实例
+extern Current_Controller_DQ_t CurrConReg_DQ;
 
 // ============================================================================
 // PI控制器实例声明
@@ -234,6 +285,20 @@ float Voltage_PI_Norm_Update(Voltage_PI_Norm_t* pi, float v_ref, float v_feedbac
 void Current_Controller_AlphaBeta_Init(void);
 void Current_Controller_AlphaBeta_Reset(void);
 void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float current_B);
+
+// ============================================================================
+// DQ坐标系电流控制器函数声明
+// ============================================================================
+void Current_Controller_DQ_Init(void);
+void Current_Controller_DQ_Reset(void);
+void Current_Controller_DQ_Update(float Id_CMD, float Iq_CMD, float current_A, float current_B);
+
+// ============================================================================
+// PARK变换函数声明 (内联优化)
+// ============================================================================
+__STATIC_FORCEINLINE void Park_Transform_Current(float I_alpha, float I_beta, float sin_theta, float cos_theta, float* Id, float* Iq);
+__STATIC_FORCEINLINE void Inverse_Park_Transform_Voltage(float Vd, float Vq, float sin_theta, float cos_theta, float* V_alpha, float* V_beta);
+
 float _fsat(float value, float max_val, float min_val);
 
 
