@@ -2,16 +2,13 @@
 // OLED 128*64 长宽比2比1 
 // 6*8字体下 每一行最多显示21个字符
 // 6*8字体下 最多显示16行
-
 #ifndef USER_REGULATOR_H
 #define USER_REGULATOR_H
-
 #include "main.h"
 #include "stdio.h"
 #include "math.h"
 #include "sogi_qsg.h"      // 新增：基于老师算法的高效锁相模块
 #include "debug_config.h"  // 新增：调试配置文件
-
 // ============================================================================
 // 三相PWM控制变量 (逆变器+整流器同步输出)
 // ============================================================================
@@ -21,18 +18,11 @@
 #define V_DC_NOMINAL 60.0f       // 标称直流母线电压 60V (用于归一化基准)
 #define V_DC_MIN 25.0f           // 最小直流母线电压
 #define V_DC_MAX 65.0f           // 最大直流母线电压
-// 修正的测量增益系数 - 基于硬件设计计算 (修正数值避免无穷大)
 #define MeasureGain 0.000805664f     // ADC转换增益: 3.3V / 4096 = 0.000805664f
-// 偏置测量相关定义 - 基于1.65V偏置
-#define IacOffset_A     2048.0f    // adc1_buf[0] - ADC1_IN1: IA
-#define VacOffset_AB    2048.0f    // adc1_buf[1] - ADC1_IN2: VAB
-#define IacOffset_B     2048.0f    // adc2_buf[0] - ADC2_IN3: IB
-#define VacOffset_BC    2048.0f    // adc2_buf[1] - ADC2_IN4: VBC
-
-// 新增直流量采集偏置定义（暂时设为0，实际使用时需要校准）
-#define DCCurrentOffset 0.0f       // adc1_buf[2] - ADC1_IN3: 整流电路输出直流电流
-#define DCVoltageOffset 0.0f       // adc1_buf[3] - ADC1_IN4: 整流电路输出直流电压
-#define BusVoltageOffset 0.0f      // adc3_buf[0] - ADC3_IN1: 直流母线电压
+#define IacOffset_A     2040.0f    // adc1_buf[0] - ADC1_IN1: IA
+#define VacOffset_AB    2030.0f    // adc1_buf[1] - ADC1_IN2: VAB
+#define IacOffset_B     2040.0f    // adc2_buf[0] - ADC2_IN3: IB
+#define VacOffset_BC    2030.0f    // adc2_buf[1] - ADC2_IN4: VBC
 
 // ============================================================================
 // 归一化电压环PI参数定义 - 适应不同直流母线电压
@@ -54,22 +44,19 @@
 
 // --- DQ坐标系电流环控制参数 (20kHz更新) - 基于稳定版本参数优化 ---
 #define PI_KP_CURRENT_ID    0.2f    // d轴电流环比例增益 (与稳定版本一致)
-#define PI_KI_CURRENT_ID    0.0f   // d轴电流环积分增益 (与稳定版本一致，避免积分饱和)
+#define PI_KI_CURRENT_ID    0.02f   // d轴电流环积分增益 (与稳定版本一致，避免积分饱和)
 #define PI_KP_CURRENT_IQ    0.2f    // q轴电流环比例增益 (与稳定版本一致)
-#define PI_KI_CURRENT_IQ    0.0f   // q轴电流环积分增益 (与稳定版本一致，避免积分饱和)
+#define PI_KI_CURRENT_IQ    0.02f   // q轴电流环积分增益 (与稳定版本一致，避免积分饱和)
 #define PI_DQ_OUT_MAX       1.2f    // DQ电流环输出最大值 (与稳定版本一致)
 #define PI_DQ_OUT_MIN      -1.2f    // DQ电流环输出最小值 (与稳定版本一致)
 
 // --- DQ解耦控制参数 ---
-#define DQ_DECOUPLING_ENABLE 0      // DQ解耦控制使能 (0=禁用, 1=启用)
-#define MOTOR_INDUCTANCE     0.001f // 电机电感值 (H) - 需要根据实际电机参数调整
+#define DQ_DECOUPLING_ENABLE 1      // DQ解耦控制使能 (0=禁用, 1=启用)
+#define MOTOR_INDUCTANCE     0.0035f // 电机电感值 (H) - 需要根据实际电机参数调整
 #define GRID_OMEGA_NOMINAL   314.159f // 标称角频率 (2*π*50Hz)
-
-// --- DQ控制器频率控制参数 ---
-#define DQ_FREQ_DIVIDER      2      // DQ控制器频率分频 (2=10kHz, 4=5kHz, 1=20kHz)
 // --- 默认参考值 ---
-#define V_REF_DEFAULT 5.0f     // 默认参考电压 (RMS)
-#define I_REF_DEFAULT 0.5f      // 默认参考电流 (RMS)
+#define V_REF_DEFAULT 32.0f     // 默认参考电压 (RMS)
+#define I_REF_DEFAULT 1.0f      // 默认参考电流 (RMS)
 
 // ============================================================================
 // 控制模式枚举 - 支持三种控制模式
@@ -245,7 +232,6 @@ void Display_CV_Mode_Page(void);      // 恒压模式显示（三相）
 void Display_CC_Mode_Page(void);      // 恒流模式显示（三相）
 void Display_V_I_Mode_Page(void);     // 电压电流分离控制模式显示
 void Display_Freq_Mode_Page(void);    // 频率调节页面显示（开环频率调节）
-void Display_Debug_Page(void);        // 调试页面显示（新增直流量采集数据）
 
 // ============================================================================
 // PI控制器函数声明
@@ -258,26 +244,10 @@ float PI_Controller_Update_Incremental(PI_Controller_t* pi, float reference, flo
 // ============================================================================
 // 归一化电压PI控制器函数声明
 // ============================================================================
-/**
- * 归一化电压PI控制器使用说明：
- *
- * 1. 初始化：使用基于30V标称电压整定的参数
- *    Voltage_PI_Norm_Init(&voltage_pi_norm, PI_KP_V_NORM, PI_KI_V_NORM,
- *                        PI_V_OUT_MIN, PI_V_OUT_MAX, V_DC_NOMINAL);
- *
- * 2. 运行时调用：自动适应25V-65V直流母线电压范围
- *    float mod_ratio = Voltage_PI_Norm_Update(&voltage_pi_norm, v_ref, v_feedback, v_dc_actual);
- *
- * 3. 优势：
- *    - PI参数具有电压无关性，在30V整定的参数可直接用于60V
- *    - 自动补偿直流母线电压变化
- *    - 保持相同的动态响应特性
- */
 void Voltage_PI_Norm_Init(Voltage_PI_Norm_t* pi, float kp_norm, float ki_norm,
                          float output_min, float output_max, float v_dc_nominal);
 void Voltage_PI_Norm_Reset(Voltage_PI_Norm_t* pi);
 float Voltage_PI_Norm_Update(Voltage_PI_Norm_t* pi, float v_ref, float v_feedback, float v_dc_actual);
-
 
 // ============================================================================
 // αβ坐标系电流控制器函数声明
@@ -301,23 +271,15 @@ __STATIC_FORCEINLINE void Inverse_Park_Transform_Voltage(float Vd, float Vq, flo
 
 float _fsat(float value, float max_val, float min_val);
 
-
-
 // ============================================================================
 // 双环控制相关函数声明
 // ============================================================================
 void Dual_Loop_Control_Init(void);
 void Dual_Loop_Control_Reset(void);
 void Set_Control_Mode(Control_Mode_t mode);
-Control_Mode_t Get_Control_Mode(void);
 void Set_Voltage_Reference(float voltage_ref);
 void Set_Current_Reference(float current_ref);
 const char* Get_Control_Mode_Name(Control_Mode_t mode);
-
-// ============================================================================
-// 高级滤波器函数声明
-// ============================================================================
-void Init_Advanced_Filters(void);
 
 // ============================================================================
 // 显示页面枚举
@@ -326,9 +288,8 @@ typedef enum {
     PAGE_MANUAL = 0,    // 手动模式页面：开环调制比控制
     PAGE_CV,            // 恒压模式页面：CV控制
     PAGE_CC,            // 恒流模式页面：CC控制
-    PAGE_V_I,           // 电压电流分离控制页面：V_I_CTRL模式
     PAGE_FREQ,          // 频率调节页面：开环频率调节
-    PAGE_DEBUG,         // 调试页面：显示新增的直流量采集数据
+    PAGE_V_I,           // 电压电流分离控制页面：V_I_CTRL模式
     PAGE_COUNT          // 页面总数
 } Display_Page_t;
 
@@ -354,100 +315,16 @@ typedef enum {
 // 参考信号选择函数声明
 // ============================================================================
 void Set_Reference_Signal(Reference_Signal_t signal_type);
-Reference_Signal_t Get_Reference_Signal(void);
 const char* Get_Reference_Signal_Name(Reference_Signal_t signal_type);
-
-// ============================================================================
-// 系统状态机枚举 (参考老师代码)
-// ============================================================================
-typedef enum {
-    PowerUp_Check_State = 0,    // 上电检查状态 (参考老师代码)
-    Wait_State,                 // 等待状态
-    Check_State,                // 检查状态
-    Running_State,              // 运行状态
-    Stop_State,                 // 停止状态
-    Permanent_Fault_State,      // 永久故障状态
-    STATE_COUNT                 // 状态总数
-} System_State_t;
-
-// 兼容性定义 (保持现有代码工作)
-#define STATE_INIT          PowerUp_Check_State
-#define STATE_OPEN_LOOP     Wait_State
-#define STATE_CLOSED_LOOP   Running_State
-#define STATE_FAULT         Permanent_Fault_State
-
-// ============================================================================
-// 故障标志结构体 (参考老师代码)
-// ============================================================================
-typedef union {
-    struct {
-        uint16_t IL_OverCurrent_SW : 1;     // 软件过流保护
-        uint16_t DCVoltage_OV : 1;          // 直流过压保护
-        uint16_t GridVoltage_State : 1;     // 电网电压状态
-        uint16_t Reserved : 13;             // 保留位
-    } bit;
-    struct {
-        uint16_t Fault1;                    // 故障字1
-        uint16_t Fault2;                    // 故障字2 (预留)
-    } Word;
-} SYS_FAULT_FLAG;
-
-// ============================================================================
-// 偏置测量相关函数声明
-// ============================================================================
-void Measure_ADC_Offsets(void);     // 测量ADC偏置函数
-uint8_t Is_Offset_Measurement_Complete(void);  // 检查偏置测量是否完成
-void Reset_Offset_Measurement(void); // 重置偏置测量，重新开始测量
-void Perform_Initial_Offset_Measurement(void); // 在初始化阶段完成偏置测量
-
 
 // ============================================================================
 // 系统控制函数声明 (参考老师代码)
 // ============================================================================
-void USER_Regulator_Start(void);    // 启动系统 (参考老师代码)
 void USER_Regulator_Stop(void);     // 停止系统
 void PWM_Enable(void);               // 使能PWM (同时启动逆变器和整流器)
 void PWM_Disable(void);              // 禁用PWM (同时停止逆变器和整流器)
-void Test_Rectifier_Sync(void);     // 测试整流器与逆变器同步性
-void Start_TIM8_For_Offset_Measurement(void);  // 启动TIM8用于偏置测量（保持shutdown低电平关断输出）
-
-// ============================================================================
-// 信号质量检测和阈值锁相模块
-// ============================================================================
-#define SIGNAL_BUFFER_SIZE      400     // 缓冲区大小：2个50Hz周期 (10kHz采样率)
-#define MIN_SIGNAL_AMPLITUDE    500     // 最小信号幅度 (ADC计数)
-#define MAX_SIGNAL_AMPLITUDE    3500    // 最大信号幅度 (ADC计数)
-#define FREQUENCY_TOLERANCE     2.0f    // 频率容差 (Hz)
-#define SMOOTHNESS_THRESHOLD    100     // 平滑度阈值 (ADC计数的标准差)
 
 // 频率关系定义
 #define REFERENCE_FREQ          50.0f   // 参考信号频率 (Hz)
-
-// 信号质量状态
-typedef enum {
-    SIGNAL_UNKNOWN,     // 未知状态
-    SIGNAL_COLLECTING,  // 正在收集数据
-    SIGNAL_ANALYZING,   // 正在分析信号质量
-    SIGNAL_GOOD,        // 信号质量良好
-    SIGNAL_BAD          // 信号质量差
-} Signal_Quality_t;
-
-// 同步状态机
-typedef enum {
-    SYNC_IDLE,          // 空闲，等待信号质量确认
-    SYNC_READY,         // 信号质量良好，准备同步
-    SYNC_CORRECTING,    // 正在进行相位校正
-    SYNC_LOCKED         // 已锁定，正常运行
-} Sync_State_t;
-
-// 信号分析结果
-typedef struct {
-    float frequency;        // 检测到的频率
-    float amplitude;        // 信号幅度
-    float dc_offset;        // 直流偏置
-    float smoothness;       // 平滑度指标
-    uint16_t zero_crossings; // 过零点数量
-    Signal_Quality_t quality; // 信号质量评估
-} Signal_Analysis_t;
 
 #endif //USER_REGULATOR_H

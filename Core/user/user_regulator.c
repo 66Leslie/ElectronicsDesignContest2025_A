@@ -9,8 +9,6 @@
 #include "adc.h"
 #include "tim.h"
 #include "sogi_pll.h"     // 引入SOGI结构体定义
-
-
 // ============================================================================
 // 三相PWM控制变量 (逆变器+整流器同步输出)
 // ============================================================================
@@ -20,18 +18,10 @@
 // 两组输出完全同步，使用相同的调制信号
 volatile float modulation_ratio = 0.5f;     // 调制比 (0.0 - 1.0)
 volatile uint8_t pwm_enabled = 0;           // PWM使能标志 (统一控制六路PWM)
-
-// 全局启动命令变量 (供按键控制)
 uint16_t variable_freq;
-// ============================================================================
-// 双环控制系统变量
-// ============================================================================
-// 控制模式和参考值 (简化变量名)
 volatile Control_Mode_t ctrl_mode = CONTROL_MODE_MANUAL;  // 当前控制模式
 volatile float v_ref = V_REF_DEFAULT;  // 电压参考值 (RMS)
 volatile float i_ref = I_REF_DEFAULT;  // 电流参考值 (RMS)
-
-// 双PI控制器实例
 PI_Controller_t voltage_pi;                 // 电压外环PI控制器 (慢环, 50Hz) - 保留兼容性
 PI_Controller_t current_pi;                 // 电流内环PI控制器 (快环, 20kHz瞬时值控制)
 Voltage_PI_Norm_t voltage_pi_norm;          // 归一化电压PI控制器 (新增)
@@ -53,34 +43,12 @@ Modulation_t Modulation;
 
 // DQ坐标系电流控制器实例
 Current_Controller_DQ_t CurrConReg_DQ;
-// ============================================================================
-// ADC数据缓冲区 (外部定义)
-// ============================================================================
+
 extern uint16_t adc1_buf[2];                // ADC1缓冲区: [IN1, IN2, IN3, IN4] (在main.c中定义)
 extern uint16_t adc2_buf[2];                // ADC2缓冲区: [IN3, IN4] (在main.c中定义)
 
 // ============================================================================
-volatile float reference_frequency = 50.0f;  // 参考信号频率（固定值）
-volatile float reference_amplitude = 0.0f;   // 参考信号幅值
-volatile Sync_Mode_t sync_mode = SYNC_MODE_FREE; // 同步模式（固定为自由运行）
-// ============================================================================
-// 参考信号选择相关变量（固定为内部信号）
-// ============================================================================
-volatile Reference_Signal_t current_reference_signal = REF_SIGNAL_INTERNAL;  // 固定使用内部参考信号
-
-// ============================================================================
-// 状态机相关变量
-// ============================================================================
-volatile System_State_t system_state = STATE_INIT;  // 当前系统状态
-volatile uint32_t state_entry_time = 0;                     // 状态进入时间
-volatile uint32_t state_transition_timer = 0;               // 状态转换定时器
-
-// ============================================================================
-// 高效锁相模块实例定义
-// ============================================================================
 SogiQsg_t g_sogi_qsg;  // 全局SOGI-QSG实例，基于老师的高效锁相算法
-SOGICompositeFilter_t sogi_filter_vab; // AB线电压SOGI复合滤波器实例（用于锁相）
-SOGICompositeFilter_t sogi_filter_vbc; // BC线电压SOGI复合滤波器实例（用于锁相）
 
 // 快速电流环专用限幅滤波器（无相位延迟）
 LimitFilter_t limit_filter_Vab;  // AB线电压限幅滤波器
@@ -101,7 +69,6 @@ volatile float current_A_sum = 0.0f;  //A相电流
 volatile float current_B_sum = 0.0f;  //B相电流 
 volatile float voltage_AB_sum = 0.0f; //AB线电压
 volatile float voltage_BC_sum = 0.0f; //BC线电压
-volatile float voltage_AC_sum = 0.0f; //AC线电压
 volatile uint16_t ac_sample_count = 0;         // AC采样计数器
 
 // ============================================================================
@@ -111,7 +78,6 @@ float ac_current_rms_A = 0.0f;             // A相电流RMS值
 float ac_current_rms_B = 0.0f;             // B相电流RMS值
 float ac_voltage_rms_AB = 0.0f;            // AB线电压RMS值
 float ac_voltage_rms_BC = 0.0f;            // BC线电压RMS值
-volatile uint8_t dc_data_ready = 0;        // DC数据就绪标志
 // ============================================================================
 // 用户调节器初始化函数
 // ============================================================================
@@ -149,8 +115,6 @@ void user_regulator_init(void)
     LimitFilter_Init(&limit_filter_Vbc,0.026f, 0.0f);
     LimitFilter_Init(&limit_filter_ia, 0.026f, 0.0f);  // 最大变化0.026A，初始值0
     LimitFilter_Init(&limit_filter_ib, 0.026f, 0.0f);  // 最大变化0.026A，初始值0
-    // 初始化参考信号选择
-    current_reference_signal = REF_SIGNAL_INTERNAL;  // 默认使用内部参考信号
 }
 
 // ============================================================================
@@ -174,18 +138,19 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
 
     // --- Part 1: 数据采集与标志位更新 (每次ADC/DMA完成都会进入) ---
     if(hadc->Instance == ADC1) { adc_completion_mask |= (1 << 0); }
-    if(hadc->Instance == ADC2) { adc_completion_mask |= (1 << 1); }
-    // 内部信号模式：直接数学计算
-    static uint32_t internal_counter = 0;
-    // 确保频率在合理范围内，避免除零错误
-    variable_freq  = _fsat(variable_freq, 65.0f, 45.0f);
-    uint32_t period_samples = (uint32_t)(20000.0f / variable_freq);
-    internal_counter = (internal_counter + 1) % period_samples;
-    float current_angle = 2.0f * M_PI * internal_counter / (float)period_samples;
-    g_sogi_qsg.sin_theta = sinf(current_angle);
-    g_sogi_qsg.cos_theta = cosf(current_angle);
-    g_sogi_qsg.is_locked = 1;  // 内部信号始终锁定
-    
+    if(hadc->Instance == ADC2) { 
+        adc_completion_mask |= (1 << 1); 
+        // 内部信号模式：直接数学计算
+        static uint32_t internal_counter = 0;
+        // 确保频率在合理范围内，避免除零错误
+        variable_freq  = _fsat(variable_freq, 100.0f, 20.0f);
+        uint32_t period_samples = (uint32_t)(20000.0f / variable_freq);
+        internal_counter = (internal_counter + 1) % period_samples;
+        float current_angle = 2.0f * M_PI * internal_counter / (float)period_samples;
+        g_sogi_qsg.sin_theta = sinf(current_angle);
+        g_sogi_qsg.cos_theta = cosf(current_angle);
+        g_sogi_qsg.is_locked = 1;  // 内部信号始终锁定
+    }
     // --- Part 2: 门禁检查，确保所有ADC都完成后才执行主逻辑 (10kHz/20kHz) ---
     if (adc_completion_mask != 0b00000011) {
         return; // 等待所有ADC完成
@@ -220,25 +185,25 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         slow_loop_counter = 0; // 计数器清零
         // 1. 计算RMS值，应用您标定的传递系数 - 添加数值保护
         // 确保累加器值为正数，避免负数开方
-        ac_current_rms_A = sqrtf(current_A_sum * 0.0025f) * 5.1778f - 0.0111f;  // 手动矫正0.1
-        ac_voltage_rms_AB = sqrtf(voltage_AB_sum * 0.0025f) * 68.011f - 0.1784f;//手动矫正0.1
-        ac_current_rms_B = sqrtf(current_B_sum * 0.0025f) * 5.1778f - 0.0111f;
-        ac_voltage_rms_BC = sqrtf(voltage_BC_sum * 0.0025f) * 68.011f - 0.1784f;
+        ac_current_rms_A = sqrtf(current_A_sum * 0.0025f) * 5.1778f;  // 手动矫正0.1
+        ac_voltage_rms_AB = sqrtf(voltage_AB_sum * 0.0025f) * 68.011f;//手动矫正0.1
+        ac_current_rms_B = sqrtf(current_B_sum * 0.0025f) * 5.1778f;
+        ac_voltage_rms_BC = sqrtf(voltage_BC_sum * 0.0025f) * 68.011f;
         // 真实值 = m * 显示值 + c 低参考值 高参考值 (V_oled1, V_real1) 和 (V_oled2, V_real2)
-        const float m_Vab = 1.0152f; // 示例值：新的斜率
-        const float c_Vab =-0.0402f; 
-        ac_voltage_rms_AB = ac_voltage_rms_AB * m_Vab + c_Vab;
-        const float m_Vbc = 1.0055f; // 示例值：新的斜率
-        const float c_Vbc =-0.0908f;
-        ac_voltage_rms_BC = ac_voltage_rms_BC *m_Vbc + c_Vbc;
-        const float m_Ia = 1.1111f; // 示例值：新的斜率
-        const float c_Ia = 0.0146f; 
+        // const float m_Vab = 1.0004f; // 示例值：新的斜率
+        // const float c_Vab = 0.209f; 
+        // ac_voltage_rms_AB = ac_voltage_rms_AB * m_Vab + c_Vab;
+        // const float m_Vbc = 1.0055f; // 示例值：新的斜率
+        // const float c_Vbc =-0.0908f;
+        // ac_voltage_rms_BC = ac_voltage_rms_BC *m_Vbc + c_Vbc;
+        const float m_Ia =  0.9053f; // 示例值：新的斜率
+        const float c_Ia = -0.0072f; 
         ac_current_rms_A = ac_current_rms_A * m_Ia + c_Ia;
-        const float m_Ib = 1.0808f; // 示例值：新的斜率
-        const float c_Ib = 0.0092f;
+        const float m_Ib = 0.8872f; // 示例值：新的斜率
+        const float c_Ib =-0.0102f;
         ac_current_rms_B = ac_current_rms_B * m_Ib + c_Ib;
         // 2. 清空累加器
-        current_A_sum = 0.0f;current_B_sum = 0.0f;voltage_AB_sum = 0.0f;voltage_BC_sum = 0.0f;voltage_AC_sum = 0.0f;
+        current_A_sum = 0.0f;current_B_sum = 0.0f;voltage_AB_sum = 0.0f;voltage_BC_sum = 0.0f;
         // 3. 执行外环控制器 (电压环或电流环参考值更新)
         if (pwm_enabled) {
             switch (ctrl_mode) {
@@ -284,13 +249,13 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         return;
     }
     // 瞬时值传递系数应用（使用您标定的传递系数）
-    float current_A_calibrated = current_A_filtered * 5.1778f - 0.0111f;
-    float current_B_calibrated = current_B_filtered * 5.1778f - 0.0111f;
-    const float m_Ia = 1.1111f; // 示例值：新的斜率
-    const float c_Ia = 0.0146f; 
+    float current_A_calibrated = current_A_filtered * 5.1778f;
+    float current_B_calibrated = current_B_filtered * 5.1778f;
+    const float m_Ia = 0.9053f; // 示例值：新的斜率
+    const float c_Ia =-0.0072f; 
     current_A_calibrated = current_A_calibrated * m_Ia + c_Ia;
-    const float m_Ib = 1.0808f; // 示例值：新的斜率
-    const float c_Ib = 0.0092f;
+    const float m_Ib =  0.8872f; // 示例值：新的斜率
+    const float c_Ib = -0.0102f;
     current_B_calibrated = current_B_calibrated * m_Ib + c_Ib;
     // 根据控制模式计算三相PWM占空比    
     float duty_A_float = 0.0f, duty_B_float = 0.0f, duty_C_float = 0.0f;
@@ -301,8 +266,9 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
             {
                 // 恒流控制：使用αβ坐标系电流控制器，但输出标准SPWM
                 i_ref_peak = i_ref * 1.414213562f;
-                Current_Controller_AlphaBeta_Update(i_ref_peak, current_A_calibrated, current_B_calibrated);
-                Current_Controller_DQ_Update(i_ref_peak, 0.0f, current_A_calibrated, current_B_calibrated);
+                // 与V_I模式保持一致，使用反相的电流参考值
+                Current_Controller_AlphaBeta_Update(-i_ref_peak, current_A_calibrated, current_B_calibrated);
+                //Current_Controller_DQ_Update(-i_ref_peak, 0.0f, current_A_calibrated, current_B_calibrated);
                 // 2. 限制三相调制信号 (增大限制范围以避免饱和)
                 float mod_A = _fsat(Modulation.Ma, 1.0f, -1.0f);
                 float mod_B = _fsat(Modulation.Mb, 1.0f, -1.0f);
@@ -853,7 +819,7 @@ void key_proc(void)
                         Set_Voltage_Reference(v_ref - 1.0f);
                         break;
                     case PAGE_CC:
-                        // CC模式：减少电压参考值
+                        // CC模式：减少电流参考值
                         Set_Current_Reference(i_ref - 0.1f);
                         break;
                     case PAGE_V_I:
@@ -918,10 +884,14 @@ void key_proc(void)
                             Set_Control_Mode(CONTROL_MODE_CURRENT);
                             break;
                         case PAGE_CC:
+                            current_page = PAGE_FREQ;
+                            Set_Control_Mode(CONTROL_MODE_MANUAL);
+                            break;
+                        case PAGE_FREQ:
                             current_page = PAGE_V_I;
                             Set_Control_Mode(CONTROL_MODE_V_I_CTRL);
                             break;
-                        case PAGE_FREQ:
+                        case PAGE_V_I:
                             current_page = PAGE_MANUAL;
                             Set_Control_Mode(CONTROL_MODE_MANUAL);
                             break;
@@ -950,7 +920,6 @@ void Update_Disp(void)
         last_update = current_time;
 
         OLED_Clear();
-
         // 根据当前页面显示对应界面
         switch (current_page) {
             case PAGE_MANUAL:
@@ -962,14 +931,11 @@ void Update_Disp(void)
             case PAGE_CC:
                 Display_CC_Mode_Page();
                 break;
-            case PAGE_V_I:
-                Display_V_I_Mode_Page();
-                break;
             case PAGE_FREQ:
                 Display_Freq_Mode_Page();
                 break;
-            case PAGE_DEBUG:
-                Display_Debug_Page();
+            case PAGE_V_I:
+                Display_V_I_Mode_Page();
                 break;
             default:
                 // 异常情况，强制回到手动模式
@@ -997,7 +963,7 @@ void Display_Freq_Mode_Page(void)
     OLED_Println(OLED_6X8, "V_AB:%.2fV", ac_voltage_rms_AB);
     OLED_Println(OLED_6X8, "V_BC:%.2fV", ac_voltage_rms_BC);
     OLED_Println(OLED_6X8, "I_A:%.3fI_B:%.3fA", ac_current_rms_A, ac_current_rms_B);
-    OLED_Println(OLED_6X8, "K1:+ K2:- K3:PWM K5:Page");
+    OLED_Println(OLED_6X8, "1:+2:- K3PWM K5Page");
 }
 void Display_Manual_Mode_Page(void)
 {
@@ -1044,7 +1010,6 @@ void Display_CC_Mode_Page(void)
     OLED_Println(OLED_6X8, "Freq: %.1fHz (Fixed)", variable_freq);
     OLED_Println(OLED_6X8, "K1:+ K2:- K3:PWM K5:Page");
 }
-
 /**
  * @brief V_I分离控制模式页面显示 - 逆变器恒压+整流器恒流
  */
@@ -1052,34 +1017,15 @@ void Display_V_I_Mode_Page(void)
 {
     // 使用统一的小字体，避免混用字体导致的行号计算问题
     OLED_SetLine(0);
-
     // V_I分离控制模式显示 - 增加调试信息
     OLED_Println(OLED_6X8, "V_I_CTRL PWM:%s", pwm_enabled ? "ON" : "OFF");
     OLED_Println(OLED_6X8, "V Set:%.1f Act:%.2fV", v_ref, ac_voltage_rms_AB);
     OLED_Println(OLED_6X8, "I Set:%.2f Act:%.2fA", i_ref, ac_current_rms_A);
-    OLED_Println(OLED_6X8, "V_Mod:%.1f%% I_Mod:%.1f%%", mod_output * 100.0f, Modulation.Ma * 100.0f);
-    OLED_Println(OLED_6X8, "V_AB:%.2fV V_BC:%.2fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
-    OLED_Println(OLED_6X8, "I_A:%.3fA I_B:%.3fA", ac_current_rms_A, ac_current_rms_B);
+    OLED_Println(OLED_6X8, "VMod:%.1fIMod:%.1f", mod_output * 100.0f, Modulation.Ma * 100.0f);
+    OLED_Println(OLED_6X8, "V_AB:%.2fV_BC:%.2fV", ac_voltage_rms_AB, ac_voltage_rms_BC);
+    OLED_Println(OLED_6X8, "I_A:%.3fI_B:%.3fA", ac_current_rms_A, ac_current_rms_B);
     OLED_Println(OLED_6X8, "Freq:%.1fHz", variable_freq);
-    OLED_Println(OLED_6X8, "1:V+ 2:V- 3:I+ 4:I- 5:PWM/MANUAL");
-}
-
-/**
- * @brief 调试页面显示 - 显示新增的直流量采集数据
- */
-void Display_Debug_Page(void)
-{
-    // 使用统一的小字体，避免混用字体导致的行号计算问题
-    OLED_SetLine(0);
-
-    // 调试页面显示新增的ADC数据
-    OLED_Println(OLED_6X8, "DEBUG - DC Data");
-    OLED_Println(OLED_6X8, "DC_I_Raw: %d", (uint16_t)dc_current_raw);
-    OLED_Println(OLED_6X8, "DC_V_Raw: %d", (uint16_t)dc_voltage_raw);
-    OLED_Println(OLED_6X8, "Bus_V_Raw: %d", (uint16_t)bus_voltage_raw);
-    OLED_Println(OLED_6X8, "ADC1: %d %d %d %d", adc1_buf[0], adc1_buf[1], adc1_buf[2]);
-    OLED_Println(OLED_6X8, "ADC2: %d %d", adc2_buf[0], adc2_buf[1]);
-    OLED_Println(OLED_6X8, "K5:Page (Debug Mode)");
+    OLED_Println(OLED_6X8, "1V+2V-3I+4I-5:PWM44M");
 }
 
 void Current_Controller_AlphaBeta_Reset(void)
@@ -1147,28 +1093,17 @@ void PWM_Enable(void)
     // 设置使能标志
     pwm_enabled = 1;
 }
-/**
- * @brief 禁用PWM (同时停止逆变器和整流器PWM输出)
- */
 void PWM_Disable(void)
 {
-    // 禁用PWM输出 (GPIO控制) - 低电平关断
     HAL_GPIO_WritePin(GPIOE, GPIO_PIN_7, GPIO_PIN_RESET);
-
-    // 停止逆变器PWM输出 (TIM8 CH1/CH2/CH3)
     HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_1);   // A相
     HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_2);   // B相
     HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_3);   // C相
-
-    // 停止整流器PWM输出 (TIM8_CH4 + TIM1_CH1/CH2)
     HAL_TIM_PWM_Stop(&htim8, TIM_CHANNEL_4);   // A相 (PC9)
     HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);   // B相 (PE9)
     HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);   // C相 (PE11)
 
-    // 清除使能标志
     pwm_enabled = 0;
-
-    // 确保所有输出为0
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, 0);
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, 0);
     __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, 0);
@@ -1196,19 +1131,12 @@ void Dual_Loop_Control_Init(void)
 
     // 初始化αβ坐标系电流控制器
     Current_Controller_AlphaBeta_Init();
-
     // 初始化DQ坐标系电流控制器
     //Current_Controller_DQ_Init();
-
-    // 设置默认控制模式
     ctrl_mode = CONTROL_MODE_MANUAL;
-
-    // 初始化参考值
     v_ref = V_REF_DEFAULT;
     i_ref = I_REF_DEFAULT;
     i_ref_peak = 0.0f;
-
-    // 初始化输出
     mod_output = 0.0f;
     i_fdbk_inst = 0.0f;
     i_ref_inst = 0.0f;
@@ -1251,9 +1179,6 @@ void Set_Control_Mode(Control_Mode_t mode)
     if (old_mode != mode) {
         Dual_Loop_Control_Reset();
     }
-
-    user_regulator_info("Control Mode: %s -> %s",
-                       Get_Control_Mode_Name(old_mode), Get_Control_Mode_Name(mode));
 }
 void Set_Voltage_Reference(float voltage_ref)
 {
@@ -1275,20 +1200,6 @@ void Set_Current_Reference(float current_ref)
 
     user_regulator_debug("Current Reference: %.2fA", i_ref);
 }
-void Set_Reference_Signal(Reference_Signal_t signal_type)
-{
-    // 固定使用内部信号，不允许切换
-    current_reference_signal = REF_SIGNAL_INTERNAL;
-    user_regulator_info("Reference Signal: Internal (Fixed)");
-}
-const char* Get_Reference_Signal_Name(Reference_Signal_t signal_type)
-{
-    switch (signal_type) {
-        case REF_SIGNAL_EXTERNAL: return "EX";
-        case REF_SIGNAL_INTERNAL: return "IN";
-        default:                  return "UNKNOWN";
-    }
-}
 const char* Get_Control_Mode_Name(Control_Mode_t mode)
 {
     switch (mode) {
@@ -1299,21 +1210,7 @@ const char* Get_Control_Mode_Name(Control_Mode_t mode)
         default:                   return "UNKNOWN";
     }
 }
-const char* Get_State_Name(System_State_t state)
-{
-    switch (state) {
-        case STATE_INIT:        return "INIT";
-        case STATE_OPEN_LOOP:   return "OPEN";
-        case STATE_CLOSED_LOOP: return "CLOSED";
-        case STATE_FAULT:       return "FAULT";
-        default:                return "UNKNOWN";
-    }
-}
-// ============================================================================
-// 归一化电压PI控制器实现 - 适应不同直流母线电压
-// ============================================================================
-
-/**
+/*
  * @brief 初始化归一化电压PI控制器
  * @param pi: 归一化PI控制器指针
  * @param kp_norm: 归一化比例增益 (基于标称电压整定)
@@ -1334,11 +1231,6 @@ void Voltage_PI_Norm_Init(Voltage_PI_Norm_t* pi, float kp_norm, float ki_norm,
     pi->v_dc_actual = 50.0f;// 初始化为标称值
     pi->v_dc_nominal = v_dc_nominal;
 }
-
-/**
- * @brief 复位归一化电压PI控制器
- * @param pi: 归一化PI控制器指针
- */
 void Voltage_PI_Norm_Reset(Voltage_PI_Norm_t* pi)
 {
     pi->output = 0.0f;
@@ -1410,37 +1302,6 @@ float Voltage_PI_Norm_Update(Voltage_PI_Norm_t* pi, float v_ref, float v_feedbac
 
     return pi->output;
 }
-
-// ============================================================================
-// 三相整流器同步测试函数
-// ============================================================================
-/**
- * @brief 测试三相整流器与逆变器的同步性
- * @note 此函数用于验证六路PWM输出的同步性，可在调试时调用
- */
-void Test_Rectifier_Sync(void)
-{
-    // 设置一个固定的测试调制比
-    float test_mod_ratio = 0.5f;
-
-    // 计算测试占空比
-    uint32_t test_duty = (uint32_t)(test_mod_ratio * PWM_PERIOD_TIM8);
-
-    // 同时设置所有PWM输出为相同占空比，验证同步性
-    // 逆变器输出
-    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, test_duty);
-    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, test_duty);
-    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, test_duty);
-
-    // 整流器输出 - 应与逆变器完全同步
-    __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, test_duty);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, test_duty);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, test_duty);
-
-    // 可以在此处添加示波器测量点或LED指示
-    // 用示波器观察PC6与PC9、PC7与PE9、PC8与PE11的同步性
-}
-
 // ============================================================================
 // DC系数保存
 //     const float adc2_in3_val = (float)adc2_in3_raw * 3.3f / 4096.0f;
