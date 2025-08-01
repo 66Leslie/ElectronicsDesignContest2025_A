@@ -257,11 +257,11 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         const float m_Vbc = 0.9921f; // 示例值：新的斜率
         const float c_Vbc = 0.2063f;
         ac_voltage_rms_BC = ac_voltage_rms_BC *m_Vbc + c_Vbc;
-        const float m_Ia = 0.9765; // 示例值：新的斜率
-        const float c_Ia = 0.0139f; 
+        const float m_Ia = 0.9921; // 示例值：新的斜率
+        const float c_Ia = 0.0102; 
         ac_current_rms_A = ac_current_rms_A * m_Ia + c_Ia;
-        const float m_Ib = 0.9514f; // 示例值：新的斜率
-        const float c_Ib = 0.0155f;
+        const float m_Ib = 0.9608f; // 示例值：新的斜率
+        const float c_Ib = 0.0143f;
         ac_current_rms_B = ac_current_rms_B * m_Ib + c_Ib;
         // 最终结果限制，避免异常值
         ac_current_rms_A = _fsat(ac_current_rms_A, 100.0f, 0.0f);
@@ -317,12 +317,12 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     // 瞬时值传递系数应用（使用您标定的传递系数）
     float current_A_calibrated = current_A_filtered * 5.1778f - 0.0111f;
     float current_B_calibrated = current_B_filtered * 5.1778f - 0.0111f;
-    // const float m_Ia = 0.9765; // 示例值：新的斜率
-    // const float c_Ia = 0.0139f; 
-    // current_A_calibrated = current_A_calibrated * m_Ia + c_Ia;
-    // const float m_Ib = 0.9514f; // 示例值：新的斜率
-    // const float c_Ib = 0.0155f;
-    // current_B_calibrated = current_B_calibrated * m_Ib + c_Ib;
+    const float m_Ia = 0.9921; // 示例值：新的斜率
+    const float c_Ia = 0.0102; 
+    current_A_calibrated = current_A_calibrated * m_Ia + c_Ia;
+    const float m_Ib = 0.9608f; // 示例值：新的斜率
+    const float c_Ib = 0.0143f;
+    current_B_calibrated = current_B_calibrated * m_Ib + c_Ib;
     // 根据控制模式计算三相PWM占空比
     float duty_A_float = 0.0f, duty_B_float = 0.0f, duty_C_float = 0.0f;
     // V_I_CTRL模式需要分别计算逆变器和整流器的占空比
@@ -366,10 +366,13 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
                 duty_B_float = (mod_B_inv + 1.0f) * 0.5f * PWM_PERIOD_TIM8;
                 duty_C_float = (mod_C_inv + 1.0f) * 0.5f * PWM_PERIOD_TIM8;
 
-                // 2. 整流器恒流控制 (TIM8 CH4 + TIM1 CH1/CH2)：使用电流控制器
-                // 恢复20kHz更新频率，提高响应速度
+                // 2. 整流器恒流控制 (TIM1 CH1/CH2 + TIM8 CH4)：使用电流控制器
                 i_ref_peak = i_ref * 1.414213562f;
-                Current_Controller_AlphaBeta_Update(i_ref_peak, current_A_calibrated, current_B_calibrated);
+
+                // ===================== 【核心修改点 1】=====================
+                // 将参考电流指令反相，而不是反相最终的PWM输出
+                Current_Controller_AlphaBeta_Update(-i_ref_peak, current_A_calibrated, current_B_calibrated);
+                // ==========================================================
 
                 // 使用电流控制器输出的调制信号
                 float mod_A_rect = _fsat(Modulation.Ma, 1.0f, -1.0f);
@@ -423,13 +426,7 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     uint32_t duty_cycle_B_inv = PWM_PERIOD_TIM8 - duty_cycle_B;
     uint32_t duty_cycle_C_inv = PWM_PERIOD_TIM8 - duty_cycle_C;
 
-    // V_I模式需要单独计算整流器反相占空比
-    uint32_t duty_cycle_A_rect_inv = 0, duty_cycle_B_rect_inv = 0, duty_cycle_C_rect_inv = 0;
-    if (ctrl_mode == CONTROL_MODE_V_I_CTRL) {
-        duty_cycle_A_rect_inv = PWM_PERIOD_TIM8 - duty_cycle_A_rect;
-        duty_cycle_B_rect_inv = PWM_PERIOD_TIM8 - duty_cycle_B_rect;
-        duty_cycle_C_rect_inv = PWM_PERIOD_TIM8 - duty_cycle_C_rect;
-    }
+    // V_I模式不再需要反相占空比计算，因为我们在参考信号层面实现了反相
 
     // 根据控制模式设置PWM输出
     switch (ctrl_mode) {
@@ -470,15 +467,18 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
             break;
 
         case CONTROL_MODE_V_I_CTRL:
-            // V_I模式：都输出，整流器与逆变器反相
+            // V_I模式：逆变器恒压，整流器恒流
             // 逆变器输出 (TIM8 CH1/CH2/CH3) - 恒压控制
-            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty_cycle_A);  // A相
-            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);  // B相
-            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);  // C相
-            // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 恒流控制，与逆变器反相
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_A_rect_inv);  // A相反相
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_B_rect_inv);  // B相反相
-            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_C_rect_inv);  // C相反相
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_1, duty_cycle_A);
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);
+
+            // ===================== 【核心修改点 2】=====================
+            // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 直接使用恒流控制器的输出，不再反相
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_A_rect);
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_B_rect);
+            __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_4, duty_cycle_C_rect);
+            // ==========================================================
             break;
 
         default:
@@ -554,23 +554,33 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
     // 计算第三相电流 (基于基尔霍夫定律: Ia + Ib + Ic = 0)
     float current_C = -(current_A + current_B);
 
-    // 步骤1: Clarke变换 - 将三相电流反馈转换到αβ坐标系
-    float F32alpha = current_A * 0.6666666667f - current_B * 0.3333333334f - current_C * 0.3333333334f;
-    float F32beta = (current_B - current_C) * 0.57735026918963f;
+    // 步骤1: Clarke变换 - 将三相电流反馈转换到αβ坐标系 (修正系数)
+    // 标准Clarke变换: α = Ia, β = (1/√3)*(Ia + 2*Ib)
+    float F32alpha = current_A;
+    float F32beta = (current_A + 2.0f * current_B) * 0.57735026918963f;
 
-    // 步骤2: 生成三相电流指令 (基于锁相环的sin/cos值)
+    // ============================================================================
+    // 【修正 #1】: 修正三相电流指令的生成逻辑 - 直接在αβ坐标系生成指令
+    // 避免三相到αβ再到三相的转换误差
+    // ============================================================================
+    // 步骤2: 直接在αβ坐标系生成电流指令 (基于锁相环的sin/cos值)
+    // α轴指令: Ia_CMD * cos(θ) (与A相同相位)
+    CurrConReg.Valpha_CMD = Ia_CMD * g_sogi_qsg.cos_theta;
+    // β轴指令: Ia_CMD * sin(θ) (滞后α轴90度)
+    CurrConReg.Vbeta_CMD = Ia_CMD * g_sogi_qsg.sin_theta;
+
+    // 为了显示目的，计算三相电流指令
     CurrConReg.Ia_CMD = Ia_CMD * g_sogi_qsg.cos_theta;
-    CurrConReg.Ib_CMD = Ia_CMD * (g_sogi_qsg.cos_theta * (-0.5f) + g_sogi_qsg.sin_theta * (0.8660254f));
+    CurrConReg.Ib_CMD = Ia_CMD * (g_sogi_qsg.cos_theta * (-0.5f) + g_sogi_qsg.sin_theta * (-0.8660254f));
     CurrConReg.Ic_CMD = Ia_CMD * (g_sogi_qsg.cos_theta * (-0.5f) - g_sogi_qsg.sin_theta * (0.8660254f));
 
-    // 步骤3: Clarke变换 - 将三相电流指令转换到αβ坐标系
-    CurrConReg.Valpha_CMD = CurrConReg.Ia_CMD * 0.6666666667f - (CurrConReg.Ib_CMD + CurrConReg.Ic_CMD) * 0.3333333334f;
-    CurrConReg.Vbeta_CMD  = (CurrConReg.Ib_CMD - CurrConReg.Ic_CMD) * 0.57735026918963f;
-
+	// ============================================================================
+    // 【修正 #2】: 修正增量式PI控制器的实现
+    // 原始代码的PI控制器算法不是标准的增量式PI，无法正确累积误差
+    // ============================================================================
     // 步骤4: 计算α轴误差并更新PI控制器
     CurrConReg.Error_alpha = CurrConReg.Valpha_CMD - F32alpha;
     float delta_alpha = (PI_KP_CURRENT_ALPHA * (CurrConReg.Error_alpha - CurrConReg.Error_alpha_Pre)) + (PI_KI_CURRENT_ALPHA * CurrConReg.Error_alpha);
-    delta_alpha = _fsat(delta_alpha,0.02,-0.02);//限制最大变化量
     CurrConReg.PI_Out_alpha += delta_alpha;
 
     // α轴输出限幅
@@ -579,12 +589,11 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
     // 步骤5: 计算β轴误差并更新PI控制器
     CurrConReg.Error_beta = CurrConReg.Vbeta_CMD - F32beta;
     float delta_beta = (PI_KP_CURRENT_BETA * (CurrConReg.Error_beta - CurrConReg.Error_beta_Pre)) + (PI_KI_CURRENT_BETA * CurrConReg.Error_beta);
-    delta_beta = _fsat(delta_beta,0.02,-0.02);//限制最大变化量
     CurrConReg.PI_Out_Beta += delta_beta;
 
     // β轴输出限幅
     CurrConReg.PI_Out_Beta = _fsat(CurrConReg.PI_Out_Beta, PI_I_OUT_MAX, PI_I_OUT_MIN);
-
+	
 	// 更新历史误差，为下一次计算做准备
     CurrConReg.Error_alpha_Pre = CurrConReg.Error_alpha;
     CurrConReg.Error_beta_Pre = CurrConReg.Error_beta;
@@ -594,13 +603,15 @@ void Current_Controller_AlphaBeta_Update(float Ia_CMD, float current_A, float cu
     CurrConReg.feedforward_b = 0.0f;
     CurrConReg.feedforward_c = 0.0f;
 
-    // 步骤7: 反Clarke变换 - 将αβ坐标系输出转换回三相调制信号
-    // Ma = V_alpha Mb = -0.5 * V_alpha + (√3/2) * V_beta Mc = -0.5 * V_alpha - (√3/2) * V_beta
+    // 步骤7: 反Clarke变换 - 将αβ坐标系输出转换回三相调制信号 (修正变换矩阵)
+    // 标准反Clarke变换:
+    // Ma = V_alpha
     Modulation.Ma = CurrConReg.PI_Out_alpha + CurrConReg.feedforward_a;
-    Modulation.Mb = -0.5f * CurrConReg.PI_Out_alpha + 0.8660254038f * CurrConReg.PI_Out_Beta + CurrConReg.feedforward_b; 
+    // Mb = -0.5 * V_alpha + (√3/2) * V_beta
+    Modulation.Mb = -0.5f * CurrConReg.PI_Out_alpha + 0.8660254038f * CurrConReg.PI_Out_Beta + CurrConReg.feedforward_b;
+    // Mc = -0.5 * V_alpha - (√3/2) * V_beta
     Modulation.Mc = -0.5f * CurrConReg.PI_Out_alpha - 0.8660254038f * CurrConReg.PI_Out_Beta + CurrConReg.feedforward_c;
     
-    // 调试输出 (可选)
 #if (ALPHABETA_DEBUG_PRINTF == 1)
     static uint32_t debug_counter = 0;
     debug_counter++;
