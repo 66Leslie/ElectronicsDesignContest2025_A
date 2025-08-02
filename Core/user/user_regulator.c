@@ -190,18 +190,18 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         ac_current_rms_B = sqrtf(current_B_sum * 0.0025f) * 5.1778f;
         ac_voltage_rms_BC = sqrtf(voltage_BC_sum * 0.0025f) * 68.011f;
         // 真实值 = m * 显示值 + c 低参考值 高参考值 (V_oled1, V_real1) 和 (V_oled2, V_real2)
-        // const float m_Vab = 1.0004f; // 示例值：新的斜率
-        // const float c_Vab = 0.209f; 
-        // ac_voltage_rms_AB = ac_voltage_rms_AB * m_Vab + c_Vab;
-        // const float m_Vbc = 1.0055f; // 示例值：新的斜率
-        // const float c_Vbc =-0.0908f;
-        // ac_voltage_rms_BC = ac_voltage_rms_BC *m_Vbc + c_Vbc;
-        const float m_Ia =  0.9053f; // 示例值：新的斜率
-        const float c_Ia = -0.0072f; 
-        ac_current_rms_A = ac_current_rms_A * m_Ia + c_Ia;
-        const float m_Ib = 0.8872f; // 示例值：新的斜率
-        const float c_Ib =-0.0102f;
-        ac_current_rms_B = ac_current_rms_B * m_Ib + c_Ib;
+        const float m_Vab = 0.9677f; // 示例值：新的斜率
+        const float c_Vab =-0.0184f; 
+        ac_voltage_rms_AB = ac_voltage_rms_AB * m_Vab + c_Vab;
+        const float m_Vbc = 0.9621f; // 示例值：新的斜率
+        const float c_Vbc =-0.0479f;
+        ac_voltage_rms_BC = ac_voltage_rms_BC *m_Vbc + c_Vbc;
+        // const float m_Ia =  0.9053f; // 示例值：新的斜率
+        // const float c_Ia = -0.0072f; 
+        // ac_current_rms_A = ac_current_rms_A * m_Ia + c_Ia;
+        // const float m_Ib = 0.8872f; // 示例值：新的斜率
+        // const float c_Ib =-0.0102f;
+        // ac_current_rms_B = ac_current_rms_B * m_Ib + c_Ib;
         // 2. 清空累加器
         current_A_sum = 0.0f;current_B_sum = 0.0f;voltage_AB_sum = 0.0f;voltage_BC_sum = 0.0f;
         // 3. 执行外环控制器 (电压环或电流环参考值更新)
@@ -251,12 +251,6 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     // 瞬时值传递系数应用（使用您标定的传递系数）
     float current_A_calibrated = current_A_filtered * 5.1778f;
     float current_B_calibrated = current_B_filtered * 5.1778f;
-    const float m_Ia = 0.9053f; // 示例值：新的斜率
-    const float c_Ia =-0.0072f; 
-    current_A_calibrated = current_A_calibrated * m_Ia + c_Ia;
-    const float m_Ib =  0.8872f; // 示例值：新的斜率
-    const float c_Ib = -0.0102f;
-    current_B_calibrated = current_B_calibrated * m_Ib + c_Ib;
     // 根据控制模式计算三相PWM占空比    
     float duty_A_float = 0.0f, duty_B_float = 0.0f, duty_C_float = 0.0f;
     // V_I_CTRL模式需要分别计算逆变器和整流器的占空比

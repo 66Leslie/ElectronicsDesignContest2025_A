@@ -45,3 +45,12 @@
 7199	7939	7752070493270091	cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir/__/__/Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_uart_ex.c.obj	36b089e0b0238105
 2463	4721	7757733147565588	three_phase_spwm.elf	235a13a58173f0a1
 1	3137	7757746400033709	build.ninja	72ef2123b8bcb2a7
+3	1292	7758264863765442	CMakeFiles/three_phase_spwm.dir/Core/Src/main.c.obj	ada47d8088b147e8
+306	1605	7758264866897692	CMakeFiles/three_phase_spwm.dir/Core/user/user_regulator.c.obj	da87209f17905a36
+1605	2947	7758264880282863	three_phase_spwm.elf	235a13a58173f0a1
+3	1432	7758281330152182	CMakeFiles/three_phase_spwm.dir/Core/Src/main.c.obj	ada47d8088b147e8
+317	1861	7758281334436766	CMakeFiles/three_phase_spwm.dir/Core/user/user_regulator.c.obj	da87209f17905a36
+1862	6694	7758281382674508	three_phase_spwm.elf	235a13a58173f0a1
+4	1336	7758283910299418	CMakeFiles/three_phase_spwm.dir/Core/Src/main.c.obj	ada47d8088b147e8
+291	1692	7758283913856886	CMakeFiles/three_phase_spwm.dir/Core/user/user_regulator.c.obj	da87209f17905a36
+1692	3036	7758283927221996	three_phase_spwm.elf	235a13a58173f0a1
