@@ -251,6 +251,12 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
     // 瞬时值传递系数应用（使用您标定的传递系数）
     float current_A_calibrated = current_A_filtered * 5.1778f;
     float current_B_calibrated = current_B_filtered * 5.1778f;
+    const float m_Ia = 0.9053f; // 示例值：新的斜率
+    const float c_Ia =-0.0072f; 
+    current_A_calibrated = current_A_calibrated * m_Ia + c_Ia;
+    const float m_Ib =  0.8872f; // 示例值：新的斜率
+    const float c_Ib = -0.0102f;
+    current_B_calibrated = current_B_calibrated * m_Ib + c_Ib;
     // 根据控制模式计算三相PWM占空比    
     float duty_A_float = 0.0f, duty_B_float = 0.0f, duty_C_float = 0.0f;
     // V_I_CTRL模式需要分别计算逆变器和整流器的占空比
@@ -278,6 +284,7 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
         case CONTROL_MODE_V_I_CTRL:
             {
                 // V_I分离控制模式：逆变器恒压，整流器恒流（保持闭环控制）
+
                 // 1. 逆变器恒压控制 (TIM8 CH1-3)：使用电压PI控制器输出
                 float final_mod_ratio_inv = _fsat(mod_output, 1.0f, 0.0f);
 
@@ -298,28 +305,17 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
                 // 2. 整流器恒流控制 (TIM1 CH1/CH2 + TIM8 CH4)：使用电流控制器
                 i_ref_peak = i_ref * 1.414213562f;
 
+                // ===================== 【核心修改点 1】=====================
                 // 将参考电流指令反相，而不是反相最终的PWM输出
                 Current_Controller_AlphaBeta_Update(-i_ref_peak, current_A_calibrated, current_B_calibrated);
+                //Current_Controller_DQ_Update(-i_ref_peak, 0.0f, current_A_calibrated, current_B_calibrated);
+                // ==========================================================
 
-                // ======================== Coder 新增代码 START ========================
-                // 提取电流环输出的αβ分量作为调制信号的基准
-                float rectifier_alpha_out = CurrConReg.PI_Out_alpha;
-                float rectifier_beta_out = CurrConReg.PI_Out_Beta;
+                // 使用电流控制器输出的调制信号
+                float mod_A_rect = _fsat(Modulation.Ma, 1.0f, -1.0f);
+                float mod_B_rect = _fsat(Modulation.Mb, 1.0f, -1.0f);
+                float mod_C_rect = _fsat(Modulation.Mc, 1.0f, -1.0f);
 
-                // 计算调制比（幅值），更精确的方式是计算矢量模长
-                float mod_ratio_rect = sqrtf(rectifier_alpha_out * rectifier_alpha_out + rectifier_beta_out * rectifier_beta_out);
-                mod_ratio_rect = _fsat(mod_ratio_rect, 1.0f, 0.0f); // 限制调制比范围
-
-                // 获取精确反相的锁相角 (cos(θ+180°) = -cos(θ), sin(θ+180°) = -sin(θ))
-                float cos_theta_rect = -g_sogi_qsg.cos_theta;
-                float sin_theta_rect = -g_sogi_qsg.sin_theta;
-
-                // 使用新的调制比和反相的锁相角，生成三相调制信号
-                float mod_A_rect = mod_ratio_rect * cos_theta_rect;
-                float mod_B_rect = mod_ratio_rect * (cos_theta_rect * (-0.5f) + sin_theta_rect * 0.866025f);//cos(theta - 120)
-                // 正确的C相计算公式
-                float mod_C_rect = mod_ratio_rect * (cos_theta_rect * (-0.5f) - sin_theta_rect * 0.866025f);//cos(theta + 120)
-                // ========================= Coder 新增代码 END =========================
                 // 计算整流器PWM占空比
                 duty_A_rect = ((mod_A_rect + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
                 duty_B_rect = ((mod_B_rect + 1.0f) * 0.5f) * PWM_PERIOD_TIM8;
@@ -411,6 +407,7 @@ void user_regulator_adc_callback(const ADC_HandleTypeDef* hadc)
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_2, duty_cycle_B);
             __HAL_TIM_SET_COMPARE(&htim8, TIM_CHANNEL_3, duty_cycle_C);
 
+            // ===================== 【核心修改点 2】=====================
             // 整流器输出 (TIM8_CH4 + TIM1_CH1/CH2) - 直接使用恒流控制器的输出，不再反相
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty_cycle_A_rect);
             __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, duty_cycle_B_rect);
